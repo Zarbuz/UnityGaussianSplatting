@@ -640,6 +640,7 @@ namespace GaussianSplatting.Runtime
 
 			m_SorterArgs.resources?.Dispose();
 
+			m_Sorter = null;
 			m_SplatCount = 0;
 			m_GpuChunksValid = false;
 
