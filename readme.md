@@ -1,3 +1,8 @@
+# WebGPU Support
+
+This fork add the support of WebGPU in Unity. All changes are made from Brendan Ducan from his own fork: https://github.com/brendan-duncan/UnityGaussianSplatting 
+I only adapted the changes to the many changes from the official Aras repo.
+
 # Gaussian Splatting playground in Unity
 
 SIGGRAPH 2023 had a paper "[**3D Gaussian Splatting for Real-Time Radiance Field Rendering**](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)" by Kerbl, Kopanas, Leimkühler, Drettakis
