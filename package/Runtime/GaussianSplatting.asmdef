@@ -29,7 +29,7 @@
         {
             "name": "com.unity.modules.vr",
             "expression": "",
-            "define": "ENABLE_VR"
+            "define": "GS_ENABLE_VR"
         }
     ],
     "noEngineReferences": false

@@ -10,7 +10,7 @@ using Unity.Profiling.LowLevel;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
-#if ENABLE_VR || UNITY_XR_MANAGEMENT
+#if GS_ENABLE_VR
 using UnityEngine.XR;
 #endif
 
@@ -809,7 +809,7 @@ namespace GaussianSplatting.Runtime
 			// Get XR eye texture dimensions if VR/XR is available, otherwise fallback to camera dimensions
 			// This ensures compatibility when XR packages are not installed or VR is disabled
 			int eyeW = 0, eyeH = 0;
-#if ENABLE_VR || UNITY_XR_MANAGEMENT
+#if GS_ENABLE_VR
 			eyeW = XRSettings.eyeTextureWidth;
 			eyeH = XRSettings.eyeTextureHeight;
 #endif
