@@ -27,6 +27,14 @@ namespace GaussianSplatting.Editor
 		SerializedProperty m_PropSHOrder;
 		SerializedProperty m_PropSHOnly;
 		SerializedProperty m_PropSortNthFrame;
+		SerializedProperty m_PropAdaptiveSortingEnabled;
+		SerializedProperty m_PropCameraMovementThreshold;
+		SerializedProperty m_PropCameraRotationThreshold;
+		SerializedProperty m_PropFastSortFrequency;
+		SerializedProperty m_PropChunkSortCacheEnabled;
+		SerializedProperty m_PropChunkCacheDistanceThreshold;
+		SerializedProperty m_PropDistanceBasedSortEnabled;
+		SerializedProperty m_PropDistantChunkThreshold;
 		SerializedProperty m_PropFrustumCullingEnabled;
 		SerializedProperty m_PropFrustumCullingTolerance;
 		SerializedProperty m_PropSortMode;
@@ -72,6 +80,14 @@ namespace GaussianSplatting.Editor
 			m_PropSHOrder = serializedObject.FindProperty("m_SHOrder");
 			m_PropSHOnly = serializedObject.FindProperty("m_SHOnly");
 			m_PropSortNthFrame = serializedObject.FindProperty("m_SortNthFrame");
+			m_PropAdaptiveSortingEnabled = serializedObject.FindProperty("m_AdaptiveSortingEnabled");
+			m_PropCameraMovementThreshold = serializedObject.FindProperty("m_CameraMovementThreshold");
+			m_PropCameraRotationThreshold = serializedObject.FindProperty("m_CameraRotationThreshold");
+			m_PropFastSortFrequency = serializedObject.FindProperty("m_FastSortFrequency");
+			m_PropChunkSortCacheEnabled = serializedObject.FindProperty("m_ChunkSortCacheEnabled");
+			m_PropChunkCacheDistanceThreshold = serializedObject.FindProperty("m_ChunkCacheDistanceThreshold");
+			m_PropDistanceBasedSortEnabled = serializedObject.FindProperty("m_DistanceBasedSortEnabled");
+			m_PropDistantChunkThreshold = serializedObject.FindProperty("m_DistantChunkThreshold");
 			m_PropFrustumCullingEnabled = serializedObject.FindProperty("m_FrustumCullingEnabled");
 			m_PropFrustumCullingTolerance = serializedObject.FindProperty("m_FrustumCullingTolerance");
 			m_PropSortMode = serializedObject.FindProperty("m_SortMode");
@@ -121,6 +137,29 @@ namespace GaussianSplatting.Editor
 			EditorGUILayout.PropertyField(m_PropSHOrder);
 			EditorGUILayout.PropertyField(m_PropSHOnly);
 			EditorGUILayout.PropertyField(m_PropSortNthFrame);
+			EditorGUILayout.PropertyField(m_PropAdaptiveSortingEnabled);
+			if (m_PropAdaptiveSortingEnabled.boolValue)
+			{
+				EditorGUI.indentLevel++;
+				EditorGUILayout.PropertyField(m_PropCameraMovementThreshold);
+				EditorGUILayout.PropertyField(m_PropCameraRotationThreshold);
+				EditorGUILayout.PropertyField(m_PropFastSortFrequency);
+				EditorGUILayout.PropertyField(m_PropChunkSortCacheEnabled);
+				if (m_PropChunkSortCacheEnabled.boolValue)
+				{
+					EditorGUI.indentLevel++;
+					EditorGUILayout.PropertyField(m_PropChunkCacheDistanceThreshold);
+					EditorGUI.indentLevel--;
+				}
+				EditorGUILayout.PropertyField(m_PropDistanceBasedSortEnabled);
+				if (m_PropDistanceBasedSortEnabled.boolValue)
+				{
+					EditorGUI.indentLevel++;
+					EditorGUILayout.PropertyField(m_PropDistantChunkThreshold);
+					EditorGUI.indentLevel--;
+				}
+				EditorGUI.indentLevel--;
+			}
 			EditorGUILayout.PropertyField(m_PropFrustumCullingEnabled);
 			EditorGUILayout.PropertyField(m_PropFrustumCullingTolerance);
 			EditorGUI.BeginChangeCheck();

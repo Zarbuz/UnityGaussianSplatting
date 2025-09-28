@@ -117,9 +117,11 @@ namespace GaussianSplatting.Runtime
 
 				// sort
 				var matrix = gs.transform.localToWorldMatrix;
-				if (gs.m_FrameCounter % gs.m_SortNthFrame == 0)
+				bool shouldSort = gs.ShouldSort(cam);
+				if (shouldSort)
 					gs.SortPoints(cmb, cam, matrix);
 				++gs.m_FrameCounter;
+				++gs.m_AdaptiveSortFrameCounter;
 
 				// cache view
 				kvp.Item2.Clear();
@@ -259,8 +261,29 @@ namespace GaussianSplatting.Runtime
 		[Tooltip("Show only Spherical Harmonics contribution, using gray color")]
 		public bool m_SHOnly;
 		[Range(1, 30)]
-		[Tooltip("Sort splats only every N frames")]
+		[Tooltip("Base sort frequency - sort splats only every N frames when camera is static")]
 		public int m_SortNthFrame = 1;
+		[Tooltip("Enable adaptive sorting based on camera movement")]
+		public bool m_AdaptiveSortingEnabled = true;
+		[Range(0.01f, 1.0f)]
+		[Tooltip("Camera movement threshold to trigger frequent sorting (units/frame)")]
+		public float m_CameraMovementThreshold = 0.1f;
+		[Range(0.5f, 10.0f)]
+		[Tooltip("Camera rotation threshold to trigger frequent sorting (degrees/frame)")]
+		public float m_CameraRotationThreshold = 1.0f;
+		[Range(1, 10)]
+		[Tooltip("Multiplier for sort frequency when camera is moving fast")]
+		public int m_FastSortFrequency = 1;
+		[Tooltip("Enable chunk-based sort caching to avoid re-sorting static chunks")]
+		public bool m_ChunkSortCacheEnabled = true;
+		[Range(0.1f, 2.0f)]
+		[Tooltip("Distance threshold for chunk sort cache invalidation")]
+		public float m_ChunkCacheDistanceThreshold = 0.5f;
+		[Tooltip("Enable distance-based sort frequency optimization")]
+		public bool m_DistanceBasedSortEnabled = true;
+		[Range(5.0f, 100.0f)]
+		[Tooltip("Distance threshold for reducing sort frequency on distant chunks")]
+		public float m_DistantChunkThreshold = 20.0f;
 		[Tooltip("Enable frustum culling to improve performance by not processing splats outside camera view")]
 		public bool m_FrustumCullingEnabled = true;
 		[Range(0.5f, 10.0f)]
@@ -327,6 +350,24 @@ namespace GaussianSplatting.Runtime
 		GaussianSplatAsset m_PrevAsset;
 		Hash128 m_PrevHash;
 		bool m_Registered;
+
+		// Adaptive sorting tracking
+		Vector3 m_LastCameraPosition;
+		Quaternion m_LastCameraRotation;
+		bool m_CameraPositionInitialized;
+		bool m_ForceInitialSort = true;
+		internal int m_AdaptiveSortFrameCounter;
+
+		// Chunk sort cache
+		Vector3 m_LastSortCameraPosition;
+		Quaternion m_LastSortCameraRotation;
+		Matrix4x4 m_LastSortMatrix;
+		bool m_SortCacheValid;
+		float m_LastSortDistance;
+
+		// Distance-based optimization
+		float m_AverageChunkDistance;
+		int m_DistanceFrameSkipCounter;
 
 		static readonly ProfilerMarker s_ProfSort = new(ProfilerCategory.Render, "GaussianSplat.Sort", MarkerFlags.SampleGPU);
 
@@ -784,6 +825,124 @@ namespace GaussianSplatting.Runtime
 			cmb.DispatchCompute(m_CSSplatUtilities, (int)KernelIndices.CalcViewData, (m_GpuView.count + (int)gsX - 1) / (int)gsX, 1, 1);
 		}
 
+		internal bool ShouldSort(Camera cam)
+		{
+			// Force initial sort to ensure proper rendering on startup
+			if (m_ForceInitialSort)
+			{
+				m_ForceInitialSort = false;
+				m_LastCameraPosition = cam.transform.position;
+				m_LastCameraRotation = cam.transform.rotation;
+				m_CameraPositionInitialized = true;
+				InvalidateSortCache(); // Invalidate cache on init
+				return true; // Force sort on very first frame
+			}
+
+			// Fallback to basic frame counter if adaptive sorting is disabled
+			if (!m_AdaptiveSortingEnabled)
+			{
+				return m_FrameCounter % m_SortNthFrame == 0;
+			}
+
+			// Initialize camera position tracking
+			if (!m_CameraPositionInitialized)
+			{
+				m_LastCameraPosition = cam.transform.position;
+				m_LastCameraRotation = cam.transform.rotation;
+				m_CameraPositionInitialized = true;
+				InvalidateSortCache(); // Invalidate cache on init
+				return true; // Sort on first frame
+			}
+
+			// Calculate camera movement
+			Vector3 currentPosition = cam.transform.position;
+			Quaternion currentRotation = cam.transform.rotation;
+
+			float positionDelta = Vector3.Distance(currentPosition, m_LastCameraPosition);
+			float rotationDelta = Quaternion.Angle(currentRotation, m_LastCameraRotation);
+
+			// Update last known position/rotation
+			m_LastCameraPosition = currentPosition;
+			m_LastCameraRotation = currentRotation;
+
+			// Check if camera is moving significantly
+			bool cameraMoving = positionDelta > m_CameraMovementThreshold || rotationDelta > m_CameraRotationThreshold;
+
+			// Check sort cache validity if enabled
+			if (m_ChunkSortCacheEnabled && m_SortCacheValid)
+			{
+				float sortDistanceDelta = Vector3.Distance(currentPosition, m_LastSortCameraPosition);
+				float sortRotationDelta = Quaternion.Angle(currentRotation, m_LastSortCameraRotation);
+
+				// Cache is valid only if both position AND rotation haven't changed significantly
+				if (sortDistanceDelta < m_ChunkCacheDistanceThreshold &&
+				    sortRotationDelta < 2.0f && // 2 degrees rotation threshold for cache
+				    !cameraMoving)
+				{
+					// Cache is still valid, skip sorting
+					return false;
+				}
+			}
+
+			// Distance-based frequency optimization
+			if (m_DistanceBasedSortEnabled && m_AverageChunkDistance > m_DistantChunkThreshold)
+			{
+				// For distant chunks, reduce sort frequency significantly
+				int distantSortFrequency = Mathf.Max(m_SortNthFrame * 2, 4);
+				if (cameraMoving)
+				{
+					return m_AdaptiveSortFrameCounter % (m_FastSortFrequency * 2) == 0;
+				}
+				else
+				{
+					return m_AdaptiveSortFrameCounter % distantSortFrequency == 0;
+				}
+			}
+
+			if (cameraMoving)
+			{
+				// When moving, sort more frequently (every m_FastSortFrequency frames)
+				return m_AdaptiveSortFrameCounter % m_FastSortFrequency == 0;
+			}
+			else
+			{
+				// When static, use the base frequency
+				return m_AdaptiveSortFrameCounter % m_SortNthFrame == 0;
+			}
+		}
+
+		void InvalidateSortCache()
+		{
+			m_SortCacheValid = false;
+		}
+
+		void UpdateSortCache(Camera cam, Matrix4x4 matrix)
+		{
+			m_LastSortCameraPosition = cam.transform.position;
+			m_LastSortCameraRotation = cam.transform.rotation;
+			m_LastSortMatrix = matrix;
+			m_SortCacheValid = true;
+
+			// Update average chunk distance for distance-based optimization
+			if (m_DistanceBasedSortEnabled)
+			{
+				UpdateAverageChunkDistance(cam);
+			}
+		}
+
+		void UpdateAverageChunkDistance(Camera cam)
+		{
+			// Calculate average distance to chunks (simplified estimation)
+			if (HasValidAsset && m_SplatCount > 0)
+			{
+				// Estimate center of splat cloud
+				Vector3 cameraPos = cam.transform.position;
+				Vector3 splatCenter = transform.position; // Object center as approximation
+
+				m_AverageChunkDistance = Vector3.Distance(cameraPos, splatCenter);
+			}
+		}
+
 		internal void SortPoints(CommandBuffer cmd, Camera cam, Matrix4x4 matrix)
 		{
 			if (cam.cameraType == CameraType.Preview)
@@ -839,6 +998,9 @@ namespace GaussianSplatting.Runtime
 				// Use original args for all splats
 				m_Sorter.Dispatch(cmd, m_SorterArgs);
 			}
+
+			// Update sort cache when sorting is performed
+			UpdateSortCache(cam, matrix);
 
 			cmd.EndSample(s_ProfSort);
 		}
@@ -1054,6 +1216,8 @@ namespace GaussianSplatting.Runtime
 				{
 					DisposeResourcesForAsset();
 					CreateResourcesForAsset();
+					InvalidateSortCache(); // Invalidate cache when asset changes
+					m_ForceInitialSort = true; // Force sort after asset change
 				}
 				else
 				{
