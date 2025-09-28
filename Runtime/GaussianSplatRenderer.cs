@@ -10,7 +10,9 @@ using Unity.Profiling.LowLevel;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
+#if ENABLE_VR || UNITY_XR_MANAGEMENT
 using UnityEngine.XR;
+#endif
 
 namespace GaussianSplatting.Runtime
 {
@@ -803,7 +805,14 @@ namespace GaussianSplatting.Runtime
 			Matrix4x4 matO2W = tr.localToWorldMatrix;
 			Matrix4x4 matW2O = tr.worldToLocalMatrix;
 			int screenW = cam.pixelWidth, screenH = cam.pixelHeight;
-			int eyeW = XRSettings.eyeTextureWidth, eyeH = XRSettings.eyeTextureHeight;
+
+			// Get XR eye texture dimensions if VR/XR is available, otherwise fallback to camera dimensions
+			// This ensures compatibility when XR packages are not installed or VR is disabled
+			int eyeW = 0, eyeH = 0;
+#if ENABLE_VR || UNITY_XR_MANAGEMENT
+			eyeW = XRSettings.eyeTextureWidth;
+			eyeH = XRSettings.eyeTextureHeight;
+#endif
 			Vector4 screenPar = new Vector4(eyeW != 0 ? eyeW : screenW, eyeH != 0 ? eyeH : screenH, 0, 0);
 			Vector4 camPos = cam.transform.position;
 

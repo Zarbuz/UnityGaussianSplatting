@@ -85,6 +85,13 @@ For contributors or advanced users wanting to modify the package:
 
 Note that the project requires **DX12, Vulkan, Metal, or WebGPU**. DX11 will not work. **WebGPU is now fully supported** with this fork!
 
+### Platform Compatibility
+
+- **Desktop**: Windows (DX12/Vulkan), macOS (Metal), Linux (Vulkan)
+- **Web**: WebGPU support (Unity 6+)
+- **VR/XR**: Automatic detection and support when XR packages are installed
+- **Mobile**: Limited support on high-end devices with compute shader capability
+
 ## Usage
 
 <img align="right" src="docs/Images/shotAssetCreator.png" width="250px">
