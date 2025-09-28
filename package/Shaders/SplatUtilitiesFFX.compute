@@ -794,6 +794,19 @@ uint TestAABBAgainstFrustum(float3 aabbMin, float3 aabbMax)
 {
     uint insideCount = 0;
 
+    // Expand the AABB by a margin to be more conservative
+    // This prevents chunks from being culled when they have splats that might extend beyond the bounds
+    float3 aabbCenter = (aabbMin + aabbMax) * 0.5;
+    float3 aabbHalfSize = (aabbMax - aabbMin) * 0.5;
+
+    // Expand bounds by a factor based on frustum culling tolerance
+    float expansionFactor = 1.0 + (0.3 * _FrustumCullingTolerance);
+    aabbHalfSize *= expansionFactor;
+
+    // Recalculate expanded bounds
+    aabbMin = aabbCenter - aabbHalfSize;
+    aabbMax = aabbCenter + aabbHalfSize;
+
     for (uint i = 0; i < 6; i++)
     {
         float3 planeNormal = _FrustumPlanes[i].xyz;
@@ -805,12 +818,15 @@ uint TestAABBAgainstFrustum(float3 aabbMin, float3 aabbMax)
         // Get negative vertex (closest to plane)
         float3 negativeVertex = lerp(aabbMax, aabbMin, step(0, planeNormal));
 
-        // Test vertices against plane
+        // Test vertices against plane with additional tolerance
         float positiveDist = dot(positiveVertex, planeNormal) + planeDistance;
         float negativeDist = dot(negativeVertex, planeNormal) + planeDistance;
 
-        // If positive vertex is behind plane, AABB is completely outside
-        if (positiveDist < 0)
+        // Add tolerance to the distance check to be more conservative
+        float tolerance = 0.5 * _FrustumCullingTolerance;
+
+        // If positive vertex is behind plane (with tolerance), AABB is completely outside
+        if (positiveDist < -tolerance)
             return CHUNK_HIDDEN;
 
         // If negative vertex is in front of plane, AABB is completely inside this plane
@@ -871,7 +887,7 @@ void CSCullSplatsInPartialChunks(uint3 id : SV_DispatchThreadID)
 
     uint chunkVis = _ChunkVisibility[chunkIdx];
 
-    // Use chunk visibility to optimize per-splat tests
+    // Use chunk visibility - if entire chunk is visible/hidden, skip per-splat test
     if (chunkVis == CHUNK_HIDDEN)
     {
         _SplatVisibility[splatIdx] = 0;
@@ -880,7 +896,7 @@ void CSCullSplatsInPartialChunks(uint3 id : SV_DispatchThreadID)
     {
         _SplatVisibility[splatIdx] = 1;
     }
-    else // CHUNK_PARTIAL: test individual splat
+    else // CHUNK_PARTIAL: need to test individual splat
     {
         // Test individual splat
         float3 pos = LoadSplatPos(splatIdx);

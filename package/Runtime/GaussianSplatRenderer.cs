@@ -865,12 +865,6 @@ namespace GaussianSplatting.Runtime
 				planesArray[i] = new Vector4(plane.normal.x, plane.normal.y, plane.normal.z, plane.distance);
 			}
 
-			// Debug: Log frustum info occasionally
-			if (Time.frameCount % 60 == 0) // Every 60 frames
-			{
-				Debug.Log($"Frustum culling enabled. Camera: {cam.name}, Splat count: {m_SplatCount}");
-				Debug.Log($"Camera position: {cam.transform.position}, Near: {cam.nearClipPlane}, Far: {cam.farClipPlane}");
-			}
 
 			// Step 1: Cull chunks
 			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.FrustumCullingEnabled, 1);
@@ -1021,15 +1015,17 @@ namespace GaussianSplatting.Runtime
 				cmd.SetComputeBufferParam(m_CSStreamCompact, copyKernelIndex, "_IndirectArgs", m_GpuIndirectArgs);
 				cmd.DispatchCompute(m_CSStreamCompact, copyKernelIndex, 1, 1, 1);
 
-				// Debug: Verify indirect args occasionally (GPU-only approach)
-				if (Time.frameCount % 120 == 0) // Every 2 seconds
+				// Debug: Display visible splats percentage occasionally
+				if (Time.frameCount % 60 == 0) // Every second
 				{
 					cmd.RequestAsyncReadback(m_GpuIndirectArgs, (readback) =>
 					{
 						if (!readback.hasError)
 						{
 							var data = readback.GetData<uint>();
-							Debug.Log($"Frustum culling - Indirect args: indexCount={data[0]}, instanceCount={data[1]}");
+							uint visibleCount = data[1]; // instanceCount
+							float percentage = (visibleCount / (float)m_SplatCount) * 100f;
+							Debug.Log($"Frustum Culling: {visibleCount:N0}/{m_SplatCount:N0} splats visible ({percentage:F1}%)");
 						}
 					});
 				}
