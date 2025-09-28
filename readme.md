@@ -1,7 +1,17 @@
-# WebGPU Support
+# WebGPU Support & Frustum Culling
 
-This fork add the support of WebGPU in Unity. All changes are made from Brendan Ducan from his own fork: https://github.com/brendan-duncan/UnityGaussianSplatting 
-I only adapted the changes to the many changes from the official Aras repo.
+This fork adds WebGPU support and optimized frustum culling for Unity Gaussian Splatting:
+
+## New Features
+- **WebGPU Support**: Full compatibility with WebGPU rendering backend in Unity 6
+  - Adapted from Brendan Duncan's work: https://github.com/brendan-duncan/UnityGaussianSplatting
+  - Race-condition-free stream compaction using separate dispatch calls (no memory barriers needed)
+  - Deterministic sorting with stable sentinel values
+- **Optimized Frustum Culling**: Significantly improved rendering performance
+  - GPU-only culling pipeline with indirect rendering
+  - Chunk-based hierarchical culling for large splat datasets
+  - Proper NDC space testing for Unity (Z range 0-1)
+  - Edge tolerance to prevent splat popping at screen borders
 
 # Gaussian Splatting playground in Unity
 
@@ -16,13 +26,13 @@ Everything in this repository is based on that "OG" gaussian splatting paper. To
 
 :warning: Status as of 2023 December: I'm not planning any significant further developments.
 
-:warning: The only platforms where this is known to work are the ones that use D3D12, Metal or Vulkan graphics APIs.
-PC (Windows on D3D12 or Vulkan), Mac (Metal), Linux (Vulkan) should work. Anything else I have not actually tested;
+:warning: The only platforms where this is known to work are the ones that use D3D12, Metal, Vulkan or WebGPU graphics APIs.
+PC (Windows on D3D12 or Vulkan), Mac (Metal), Linux (Vulkan), and WebGPU should work. Anything else I have not actually tested;
 it might work or it might not.
 - Some virtual reality devices work (reportedly HTC Vive, Varjo Aero, Quest 3 and Quest Pro). Some others might not
   work, e.g. Apple Vision Pro. See [#17](https://github.com/aras-p/UnityGaussianSplatting/issues/17)
 - Anything using OpenGL or OpenGL ES: [#26](https://github.com/aras-p/UnityGaussianSplatting/issues/26)
-- WebGPU might work someday, but seems that today it does not quite have all the required graphics features yet: [#65](https://github.com/aras-p/UnityGaussianSplatting/issues/65)
+- **WebGPU now works** with this fork! The implementation uses WebGPU-compatible compute shaders without memory barriers
 - Mobile may or might not work. Some iOS devices definitely do not work ([#72](https://github.com/aras-p/UnityGaussianSplatting/issues/72)),
   some Androids do not work either ([#112](https://github.com/aras-p/UnityGaussianSplatting/issues/112))
 

@@ -263,9 +263,9 @@ namespace GaussianSplatting.Runtime
 		public int m_SortNthFrame = 1;
 		[Tooltip("Enable frustum culling to improve performance by not processing splats outside camera view")]
 		public bool m_FrustumCullingEnabled = true;
-		[Range(0.1f, 100.0f)]
-		[Tooltip("Frustum culling tolerance to avoid cutting splats at screen edges")]
-		public float m_FrustumCullingTolerance = 0.5f;
+		[Range(0.5f, 10.0f)]
+		[Tooltip("Frustum culling tolerance to avoid cutting splats at screen edges (higher values = more stable, less culling)")]
+		public float m_FrustumCullingTolerance = 2.0f;
 
 		public SortMode m_SortMode = SortMode.Radix;
 
@@ -809,7 +809,7 @@ namespace GaussianSplatting.Runtime
 			else
 			{
 				// Fallback: mark all splats as visible and initialize buffers for indirect rendering
-				m_VisibleSplatCount = (uint)m_SplatCount;
+				// Note: m_VisibleSplatCount is no longer used for CPU logic, only GPU indirect rendering
 
 				// Initialize sort keys with original indices (0, 1, 2, ...)
 				cmd.SetComputeBufferParam(m_CSSplatUtilities, (int)KernelIndices.SetIndices, Props.SplatSortKeys, m_GpuSortKeys);
@@ -908,25 +908,9 @@ namespace GaussianSplatting.Runtime
 			// Step 2: Copy visible indices to sort keys buffer for sorting
 			CopyVisibleIndicesToSortKeys(cmd);
 
-			// CRITICAL: Read back visible count to properly configure the sorter
-			// This is necessary for correct sorting - we need to know how many splats to sort
-			if (m_FrustumCullingEnabled)
-			{
-				cmd.RequestAsyncReadback(m_GpuVisibleCount, (readback) =>
-				{
-					if (readback.hasError)
-					{
-						Debug.LogError("Failed to read visible count");
-						m_VisibleSplatCount = (uint)m_SplatCount; // Fallback
-					}
-					else
-					{
-						var data = readback.GetData<uint>();
-						m_VisibleSplatCount = data[0];
-						Debug.Log($"Frustum culling result: {m_VisibleSplatCount} visible splats out of {m_SplatCount} total");
-					}
-				});
-			}
+			// GPU-only approach: No CPU readback needed
+			// The visible count stays on GPU and is used directly via indirect rendering
+			// This eliminates the frame delay and synchronization issues with async readbacks
 
 			// No CPU readback - count stays on GPU for indirect operations
 			// The visible count will be used directly from m_GpuVisibleCount buffer
@@ -983,15 +967,22 @@ namespace GaussianSplatting.Runtime
 				return;
 			}
 
-			// Use dedicated stream compaction compute shader (WebGPU compatible)
-			const int kernelIndex = 0; // CSCountVisibleSplats is the first and only kernel
-			cmd.SetComputeBufferParam(m_CSStreamCompact, kernelIndex, Props.SplatVisibility, m_GpuSplatVisibility);
-			cmd.SetComputeBufferParam(m_CSStreamCompact, kernelIndex, Props.VisibleIndices, m_GpuVisibleIndices);
-			cmd.SetComputeBufferParam(m_CSStreamCompact, kernelIndex, Props.VisibleCount, m_GpuVisibleCount);
+			// WebGPU compatible: Use separate dispatches to avoid race conditions
+
+			// Dispatch 1: Reset visible count (eliminates race condition)
+			const int resetKernel = 3; // CSResetVisibleCount
+			cmd.SetComputeBufferParam(m_CSStreamCompact, resetKernel, Props.VisibleCount, m_GpuVisibleCount);
+			cmd.DispatchCompute(m_CSStreamCompact, resetKernel, 1, 1, 1);
+
+			// Dispatch 2: Count visible splats (GPU guarantees dispatch 1 is finished)
+			const int countKernel = 0; // CSCountVisibleSplats
+			cmd.SetComputeBufferParam(m_CSStreamCompact, countKernel, Props.SplatVisibility, m_GpuSplatVisibility);
+			cmd.SetComputeBufferParam(m_CSStreamCompact, countKernel, Props.VisibleIndices, m_GpuVisibleIndices);
+			cmd.SetComputeBufferParam(m_CSStreamCompact, countKernel, Props.VisibleCount, m_GpuVisibleCount);
 			cmd.SetComputeIntParam(m_CSStreamCompact, Props.SplatCount, m_SplatCount);
 
-			m_CSStreamCompact.GetKernelThreadGroupSizes(kernelIndex, out uint countGroupSize, out _, out _);
-			cmd.DispatchCompute(m_CSStreamCompact, kernelIndex, (m_SplatCount + (int)countGroupSize - 1) / (int)countGroupSize, 1, 1);
+			m_CSStreamCompact.GetKernelThreadGroupSizes(countKernel, out uint countGroupSize, out _, out _);
+			cmd.DispatchCompute(m_CSStreamCompact, countKernel, (m_SplatCount + (int)countGroupSize - 1) / (int)countGroupSize, 1, 1);
 
 			// The count is now available in m_GpuVisibleCount for indirect operations
 			// No CPU readback needed!
@@ -1030,16 +1021,15 @@ namespace GaussianSplatting.Runtime
 				cmd.SetComputeBufferParam(m_CSStreamCompact, copyKernelIndex, "_IndirectArgs", m_GpuIndirectArgs);
 				cmd.DispatchCompute(m_CSStreamCompact, copyKernelIndex, 1, 1, 1);
 
-				// Debug: Verify indirect args occasionally
+				// Debug: Verify indirect args occasionally (GPU-only approach)
 				if (Time.frameCount % 120 == 0) // Every 2 seconds
 				{
-					var indirectData = new uint[5];
 					cmd.RequestAsyncReadback(m_GpuIndirectArgs, (readback) =>
 					{
 						if (!readback.hasError)
 						{
 							var data = readback.GetData<uint>();
-							Debug.Log($"Indirect args: indexCount={data[0]}, instanceCount={data[1]} (frustum culling)");
+							Debug.Log($"Frustum culling - Indirect args: indexCount={data[0]}, instanceCount={data[1]}");
 						}
 					});
 				}

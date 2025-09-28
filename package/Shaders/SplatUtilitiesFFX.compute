@@ -72,11 +72,12 @@ void CSCalcDistances(uint3 id : SV_DispatchThreadID)
 
     uint origIdx = _SplatSortKeys[idx];
 
-    // Check for sentinel value (unused entry from frustum culling)
-    if (origIdx == 0xFFFFFFFF)
+    // Check for sentinel values (unused entries from frustum culling)
+    if (origIdx >= 0xFFFFFFF0)
     {
-        // Set maximum distance so this entry sorts to the end
-        _SplatSortDistances[idx] = 0xFFFFFFFF;
+        // Set maximum distance so these entries sort to the end
+        // Use the same sentinel value to maintain sorting stability
+        _SplatSortDistances[idx] = origIdx;
     }
     else
     {
@@ -870,17 +871,16 @@ void CSCullSplatsInPartialChunks(uint3 id : SV_DispatchThreadID)
 
     uint chunkVis = _ChunkVisibility[chunkIdx];
 
-    // TEMPORARY: Skip chunk-level culling and test every splat directly
-    // This helps debug if chunk culling causes z-fighting issues
-    if (false) // chunkVis == CHUNK_HIDDEN)
+    // Use chunk visibility to optimize per-splat tests
+    if (chunkVis == CHUNK_HIDDEN)
     {
         _SplatVisibility[splatIdx] = 0;
     }
-    else if (false) // chunkVis == CHUNK_VISIBLE)
+    else if (chunkVis == CHUNK_VISIBLE)
     {
         _SplatVisibility[splatIdx] = 1;
     }
-    else // CHUNK_PARTIAL or DEBUG: test every splat
+    else // CHUNK_PARTIAL: test individual splat
     {
         // Test individual splat
         float3 pos = LoadSplatPos(splatIdx);
@@ -888,9 +888,9 @@ void CSCullSplatsInPartialChunks(uint3 id : SV_DispatchThreadID)
         float4 viewPos = mul(_MatrixMV, float4(pos, 1));
 
         // Behind camera test (Unity uses negative Z for objects in front of camera)
-        bool visible = viewPos.z < 0;
+        bool visible = viewPos.z < 0.1; // Small tolerance for near plane
 
-        // Robust frustum test using NDC coordinates with splat-size-based tolerance
+        // Robust frustum test using NDC coordinates
         if (visible)
         {
             // Transform to clip space
@@ -901,13 +901,15 @@ void CSCullSplatsInPartialChunks(uint3 id : SV_DispatchThreadID)
             {
                 float3 ndc = clipPos.xyz / clipPos.w;
 
-                // Use a small fixed tolerance to avoid edge cutting without being too permissive
-                float tolerance = 0.02 * _FrustumCullingTolerance;
+                // Use a fixed tolerance that works well in practice
+                // This accounts for typical splat sizes without being overly complex
+                float tolerance = 0.15 * _FrustumCullingTolerance;
 
                 // NDC coordinates should be in [-1, 1] range for visible objects
+                // Note: In Unity, Z is 0 to 1 in NDC space (not -1 to 1)
                 if (ndc.x < -1.0 - tolerance || ndc.x > 1.0 + tolerance ||
                     ndc.y < -1.0 - tolerance || ndc.y > 1.0 + tolerance ||
-                    ndc.z < -1.0 - tolerance || ndc.z > 1.0 + tolerance)
+                    ndc.z < -0.1 || ndc.z > 1.1) // Z is less strict
                 {
                     visible = false;
                 }
