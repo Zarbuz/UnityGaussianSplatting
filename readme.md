@@ -1,6 +1,8 @@
-# WebGPU Support & Advanced Performance Optimizations
+# Unity Gaussian Splatting Package - WebGPU & Advanced Optimizations
 
-This fork adds WebGPU support and advanced performance optimizations for Unity Gaussian Splatting:
+**Professional Unity package** for 3D Gaussian Splatting with WebGPU support and advanced performance optimizations.
+
+This package-only repository focuses purely on the Unity package without example projects, making it lightweight for professional use.
 
 ## New Features
 
@@ -71,10 +73,13 @@ it might work or it might not.
 
 The package will be installed with all dependencies automatically.
 
-### Option 2: Manual Installation
+### Option 2: Manual Development Setup
 
-Download or clone this repository, open `projects/GaussianExample` as a Unity project (I use Unity 2022.3, other versions might also work),
-and open `GSTestScene` scene in there.
+For contributors or advanced users wanting to modify the package:
+
+1. Clone this repository
+2. The package is structured as a Unity package in the root directory
+3. You can test it by creating a new Unity project and adding this as a local package
 
 ## Requirements
 
@@ -99,9 +104,13 @@ this capture at Very Low preset is under 8MB of total size (click to see the vid
 
 If everything was fine, there should be a GaussianSplat asset that has several data files next to it.
 
-Since the gaussian splat models are quite large, I have not included any in this Github repo. The original
-[paper github page](https://github.com/graphdeco-inria/gaussian-splatting) has a a link to
-[14GB zip](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip) of their models.
+## Getting Test Assets
+
+Since gaussian splat models are quite large, they are not included in this package repository. You can obtain test models from:
+
+- **Original research models**: [14GB zip from INRIA](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/datasets/pretrained/models.zip)
+- **Scaniverse app**: Export as SPZ format
+- **Your own models**: Train using the [original 3D Gaussian Splatting code](https://github.com/graphdeco-inria/gaussian-splatting)
 
 
 In the game object that has a `GaussianSplatRenderer` script, **point the Asset field to** one of your created assets.

@@ -32,3 +32,6 @@ projects/GaussianExample-URP/Build/
 # Package development artifacts
 /package/
 /package.json.meta
+
+# Example projects (not part of the package)
+/projects/
