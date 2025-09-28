@@ -27,6 +27,8 @@ namespace GaussianSplatting.Editor
 		SerializedProperty m_PropSHOrder;
 		SerializedProperty m_PropSHOnly;
 		SerializedProperty m_PropSortNthFrame;
+		SerializedProperty m_PropFrustumCullingEnabled;
+		SerializedProperty m_PropFrustumCullingTolerance;
 		SerializedProperty m_PropSortMode;
 		SerializedProperty m_PropRenderMode;
 		SerializedProperty m_PropPointDisplaySize;
@@ -37,6 +39,7 @@ namespace GaussianSplatting.Editor
 		SerializedProperty m_PropShaderDebugBoxes;
 		SerializedProperty m_PropCSSplatUtilitiesRadix;
 		SerializedProperty m_PropCSSplatUtilitiesFFX;
+		SerializedProperty m_PropCSStreamCompact;
 
 		bool m_ResourcesExpanded = false;
 		int m_CameraIndex = 0;
@@ -69,6 +72,8 @@ namespace GaussianSplatting.Editor
 			m_PropSHOrder = serializedObject.FindProperty("m_SHOrder");
 			m_PropSHOnly = serializedObject.FindProperty("m_SHOnly");
 			m_PropSortNthFrame = serializedObject.FindProperty("m_SortNthFrame");
+			m_PropFrustumCullingEnabled = serializedObject.FindProperty("m_FrustumCullingEnabled");
+			m_PropFrustumCullingTolerance = serializedObject.FindProperty("m_FrustumCullingTolerance");
 			m_PropSortMode = serializedObject.FindProperty("m_SortMode");
 			m_PropRenderMode = serializedObject.FindProperty("m_RenderMode");
 			m_PropPointDisplaySize = serializedObject.FindProperty("m_PointDisplaySize");
@@ -79,6 +84,7 @@ namespace GaussianSplatting.Editor
 			m_PropShaderDebugBoxes = serializedObject.FindProperty("m_ShaderDebugBoxes");
 			m_PropCSSplatUtilitiesRadix = serializedObject.FindProperty("m_CSSplatUtilitiesRadix");
 			m_PropCSSplatUtilitiesFFX = serializedObject.FindProperty("m_CSSplatUtilitiesFFX");
+			m_PropCSStreamCompact = serializedObject.FindProperty("m_CSStreamCompact");
 
 			s_AllEditors.Add(this);
 		}
@@ -115,6 +121,8 @@ namespace GaussianSplatting.Editor
 			EditorGUILayout.PropertyField(m_PropSHOrder);
 			EditorGUILayout.PropertyField(m_PropSHOnly);
 			EditorGUILayout.PropertyField(m_PropSortNthFrame);
+			EditorGUILayout.PropertyField(m_PropFrustumCullingEnabled);
+			EditorGUILayout.PropertyField(m_PropFrustumCullingTolerance);
 			EditorGUI.BeginChangeCheck();
 			EditorGUILayout.PropertyField(m_PropSortMode);
 			if (EditorGUI.EndChangeCheck())
@@ -140,6 +148,7 @@ namespace GaussianSplatting.Editor
 				EditorGUILayout.PropertyField(m_PropShaderDebugBoxes);
 				EditorGUILayout.PropertyField(m_PropCSSplatUtilitiesRadix);
 				EditorGUILayout.PropertyField(m_PropCSSplatUtilitiesFFX);
+				EditorGUILayout.PropertyField(m_PropCSStreamCompact);
 			}
 			bool validAndEnabled = gs && gs.enabled && gs.gameObject.activeInHierarchy && gs.HasValidAsset;
 			if (validAndEnabled && !gs.HasValidRenderSetup)

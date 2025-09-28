@@ -17,6 +17,12 @@
 #pragma kernel CSExportData
 #pragma kernel CSCopySplats
 
+// New frustum culling kernels
+#pragma kernel CSCullChunks
+#pragma kernel CSCullSplatsInPartialChunks
+#pragma kernel CSStreamCompactScan
+#pragma kernel CSStreamCompactWrite
+
 // DeviceRadixSort
 #pragma multi_compile __ KEY_UINT KEY_INT KEY_FLOAT
 #pragma multi_compile __ PAYLOAD_UINT PAYLOAD_INT PAYLOAD_FLOAT
@@ -75,10 +81,28 @@ void CSCalcDistances (uint3 id : SV_DispatchThreadID)
 
     uint origIdx = _SplatSortKeys[idx];
 
-    float3 pos = LoadSplatPos(origIdx);
-    pos = mul(_MatrixMV, float4(pos.xyz, 1)).xyz;
+    // Check for sentinel value (unused entry from frustum culling)
+    if (origIdx == 0xFFFFFFFF)
+    {
+        // Set maximum distance so this entry sorts to the end
+        _SplatSortDistances[idx] = 0xFFFFFFFF;
+    }
+    else
+    {
+        float3 pos = LoadSplatPos(origIdx);
+        pos = mul(_MatrixMV, float4(pos.xyz, 1)).xyz;
 
-    _SplatSortDistances[idx] = FloatToSortableUint(pos.z);
+        // Create a deterministic sort key by encoding original index in lower bits
+        // This ensures stable sorting for splats with similar depths
+        uint distanceKey = FloatToSortableUint(pos.z);
+
+        // Use lower 16 bits for original index to break ties deterministically
+        // Shift distance to upper bits and add index in lower bits
+        uint indexBits = origIdx & 0xFFFF; // Take lower 16 bits of original index
+        distanceKey = (distanceKey & 0xFFFF0000) | indexBits;
+
+        _SplatSortDistances[idx] = distanceKey;
+    }
 }
 
 RWStructuredBuffer<SplatViewData> _SplatViewData;
@@ -89,6 +113,20 @@ uint _SHOrder;
 uint _SHOnly;
 
 uint _SplatCutoutsCount;
+
+// Frustum culling variables
+uint _FrustumCullingEnabled;
+float4 _FrustumPlanes[6]; // 6 frustum planes (xyz = normal, w = distance)
+float _FrustumCullingTolerance;
+RWStructuredBuffer<uint> _ChunkVisibility; // per chunk: 0=hidden, 1=visible, 2=partial
+RWStructuredBuffer<uint> _SplatVisibility; // per splat: 0=hidden, 1=visible
+RWStructuredBuffer<uint> _VisibleIndices; // compacted visible splat indices
+RWStructuredBuffer<uint> _StreamCompactTemp; // temp buffer for scan operations
+RWStructuredBuffer<uint> _VisibleCount; // [0] = number of visible splats
+
+#define CHUNK_HIDDEN 0
+#define CHUNK_VISIBLE 1
+#define CHUNK_PARTIAL 2
 
 #define SPLAT_CUTOUT_TYPE_ELLIPSOID 0
 #define SPLAT_CUTOUT_TYPE_BOX 1
@@ -756,3 +794,180 @@ void CSCopySplats (uint3 id : SV_DispatchThreadID)
         _CopyDstEditDeleted.InterlockedOr(dstWordIdx * 4, 1u << dstBitIdx);
     }
 }
+
+// ========== FRUSTUM CULLING KERNELS ==========
+
+// Test if AABB is completely inside, outside, or intersecting frustum
+uint TestAABBAgainstFrustum(float3 aabbMin, float3 aabbMax)
+{
+    uint insideCount = 0;
+
+    for (uint i = 0; i < 6; i++)
+    {
+        float3 planeNormal = _FrustumPlanes[i].xyz;
+        float planeDistance = _FrustumPlanes[i].w;
+
+        // Get positive vertex (farthest from plane)
+        float3 positiveVertex = lerp(aabbMin, aabbMax, step(0, planeNormal));
+
+        // Get negative vertex (closest to plane)
+        float3 negativeVertex = lerp(aabbMax, aabbMin, step(0, planeNormal));
+
+        // Test vertices against plane
+        float positiveDist = dot(positiveVertex, planeNormal) + planeDistance;
+        float negativeDist = dot(negativeVertex, planeNormal) + planeDistance;
+
+        // If positive vertex is behind plane, AABB is completely outside
+        if (positiveDist < 0)
+            return CHUNK_HIDDEN;
+
+        // If negative vertex is in front of plane, AABB is completely inside this plane
+        if (negativeDist >= 0)
+            insideCount++;
+    }
+
+    // If AABB is completely inside all 6 planes, it's fully visible
+    return (insideCount == 6) ? CHUNK_VISIBLE : CHUNK_PARTIAL;
+}
+
+// Kernel 1: Test chunks against frustum
+[numthreads(GROUP_SIZE,1,1)]
+void CSCullChunks(uint3 id : SV_DispatchThreadID)
+{
+    uint chunkIdx = id.x;
+    if (chunkIdx >= _SplatChunkCount)
+        return;
+
+    // Default to visible if culling disabled
+    if (!_FrustumCullingEnabled)
+    {
+        _ChunkVisibility[chunkIdx] = CHUNK_VISIBLE;
+        return;
+    }
+
+    // Load chunk bounds
+    SplatChunkInfo chunk = _SplatChunks[chunkIdx];
+    float3 chunkMin = float3(chunk.posX.x, chunk.posY.x, chunk.posZ.x);
+    float3 chunkMax = float3(chunk.posX.y, chunk.posY.y, chunk.posZ.y);
+
+    // Transform chunk bounds to world space
+    float3 worldMin = mul(_MatrixObjectToWorld, float4(chunkMin, 1)).xyz;
+    float3 worldMax = mul(_MatrixObjectToWorld, float4(chunkMax, 1)).xyz;
+
+    // Test chunk AABB against frustum
+    uint visibility = TestAABBAgainstFrustum(worldMin, worldMax);
+    _ChunkVisibility[chunkIdx] = visibility;
+}
+
+// Kernel 2: Test individual splats in partial chunks
+[numthreads(GROUP_SIZE,1,1)]
+void CSCullSplatsInPartialChunks(uint3 id : SV_DispatchThreadID)
+{
+    uint splatIdx = id.x;
+    if (splatIdx >= _SplatCount)
+        return;
+
+    // Find which chunk this splat belongs to
+    uint chunkIdx = splatIdx / 256; // kChunkSize = 256
+
+    // Default to visible if culling disabled
+    if (!_FrustumCullingEnabled)
+    {
+        _SplatVisibility[splatIdx] = 1;
+        return;
+    }
+
+    uint chunkVis = _ChunkVisibility[chunkIdx];
+
+    // TEMPORARY: Skip chunk-level culling and test every splat directly
+    // This helps debug if chunk culling causes z-fighting issues
+    if (false) // chunkVis == CHUNK_HIDDEN)
+    {
+        _SplatVisibility[splatIdx] = 0;
+    }
+    else if (false) // chunkVis == CHUNK_VISIBLE)
+    {
+        _SplatVisibility[splatIdx] = 1;
+    }
+    else // CHUNK_PARTIAL or DEBUG: test every splat
+    {
+        // Test individual splat
+        float3 pos = LoadSplatPos(splatIdx);
+        float3 worldPos = mul(_MatrixObjectToWorld, float4(pos, 1)).xyz;
+        float4 viewPos = mul(_MatrixMV, float4(pos, 1));
+
+        // Behind camera test (Unity uses negative Z for objects in front of camera)
+        bool visible = viewPos.z < 0;
+
+        // Robust frustum test using NDC coordinates with splat-size-based tolerance
+        if (visible)
+        {
+            // Transform to clip space
+            float4 clipPos = mul(UNITY_MATRIX_P, viewPos);
+
+            // Perspective divide to get NDC coordinates
+            if (clipPos.w > 0.001) // Avoid division by zero
+            {
+                float3 ndc = clipPos.xyz / clipPos.w;
+
+                // Use a small fixed tolerance to avoid edge cutting without being too permissive
+                float tolerance = 0.02 * _FrustumCullingTolerance;
+
+                // NDC coordinates should be in [-1, 1] range for visible objects
+                if (ndc.x < -1.0 - tolerance || ndc.x > 1.0 + tolerance ||
+                    ndc.y < -1.0 - tolerance || ndc.y > 1.0 + tolerance ||
+                    ndc.z < -1.0 - tolerance || ndc.z > 1.0 + tolerance)
+                {
+                    visible = false;
+                }
+            }
+            else
+            {
+                // Invalid clip space coordinate
+                visible = false;
+            }
+        }
+
+        _SplatVisibility[splatIdx] = visible ? 1 : 0;
+    }
+}
+
+// Kernel 3: Stream compaction scan (prefix sum)
+[numthreads(GROUP_SIZE,1,1)]
+void CSStreamCompactScan(uint3 id : SV_DispatchThreadID)
+{
+    // This will use FidelityFX scan implementation
+    // For now, simple implementation - to be replaced with FfxParallelSortScan adaptation
+    uint idx = id.x;
+    if (idx >= _SplatCount)
+        return;
+
+    // Simple prefix sum - this should be replaced with optimized version
+    uint prefixSum = 0;
+    for (uint i = 0; i <= idx; i++)
+    {
+        if (i < _SplatCount)
+            prefixSum += _SplatVisibility[i];
+    }
+    _StreamCompactTemp[idx] = prefixSum;
+}
+
+// Kernel 4: Write compacted indices
+[numthreads(GROUP_SIZE,1,1)]
+void CSStreamCompactWrite(uint3 id : SV_DispatchThreadID)
+{
+    uint idx = id.x;
+    if (idx >= _SplatCount)
+        return;
+
+    if (_SplatVisibility[idx] == 1)
+    {
+        uint outputIdx = (idx > 0) ? _StreamCompactTemp[idx-1] : 0;
+        _VisibleIndices[outputIdx] = idx;
+
+        // Last thread writes total count
+        if (idx == _SplatCount - 1)
+            _VisibleCount[0] = _StreamCompactTemp[idx];
+    }
+}
+
