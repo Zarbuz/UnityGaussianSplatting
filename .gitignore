@@ -28,3 +28,7 @@
 projects/GaussianExample-URP/.vs/
 projects/GaussianExample-URP/.vsconfig
 projects/GaussianExample-URP/Build/
+
+# Package development artifacts
+/package/
+/package.json.meta

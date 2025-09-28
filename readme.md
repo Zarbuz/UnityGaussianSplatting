@@ -60,13 +60,27 @@ it might work or it might not.
 - Mobile may or might not work. Some iOS devices definitely do not work ([#72](https://github.com/aras-p/UnityGaussianSplatting/issues/72)),
   some Androids do not work either ([#112](https://github.com/aras-p/UnityGaussianSplatting/issues/112))
 
-## Usage
+## Installation
+
+### Option 1: Unity Package Manager (Recommended)
+
+1. Open Unity Package Manager (`Window > Package Manager`)
+2. Click the `+` button and select `Add package from git URL`
+3. Enter: `https://github.com/Zarbuz/UnityGaussianSplatting.git`
+4. Click `Add`
+
+The package will be installed with all dependencies automatically.
+
+### Option 2: Manual Installation
 
 Download or clone this repository, open `projects/GaussianExample` as a Unity project (I use Unity 2022.3, other versions might also work),
 and open `GSTestScene` scene in there.
 
-Note that the project requires DX12 or Vulkan on Windows, i.e. **DX11 will not work**. This is **not tested at all on mobile/web**, and probably
-does not work there.
+## Requirements
+
+Note that the project requires **DX12, Vulkan, Metal, or WebGPU**. DX11 will not work. **WebGPU is now fully supported** with this fork!
+
+## Usage
 
 <img align="right" src="docs/Images/shotAssetCreator.png" width="250px">
 

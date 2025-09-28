@@ -1,0 +1,40 @@
+{
+  "name": "com.zarbuz.gaussian-splatting",
+  "displayName": "Gaussian Splatting (WebGPU & Advanced Optimizations)",
+  "version": "2.0.0",
+  "unity": "2022.3",
+  "unityRelease": "7f1",
+  "description": "3D Gaussian Splatting rendering with WebGPU support and advanced performance optimizations including adaptive sorting, intelligent caching, and frustum culling",
+  "keywords": [
+    "unity",
+    "gaussian-splatting",
+    "webgpu",
+    "performance",
+    "rendering",
+    "3d",
+    "radiance-fields",
+    "frustum-culling",
+    "adaptive-sorting"
+  ],
+  "author": {
+    "name": "Aras Pranckevicius (Original), Zarbuz (WebGPU & Optimizations Fork)",
+    "url": "https://github.com/Zarbuz/UnityGaussianSplatting"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Zarbuz/UnityGaussianSplatting.git"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "com.unity.burst": "1.8.8",
+    "com.unity.collections": "2.1.4",
+    "com.unity.mathematics": "1.2.6"
+  },
+  "samples": [
+    {
+      "displayName": "Basic Gaussian Splatting Example",
+      "description": "Basic example scene showing Gaussian Splatting rendering with optimization settings",
+      "path": "Samples~/BasicExample"
+    }
+  ]
+}
