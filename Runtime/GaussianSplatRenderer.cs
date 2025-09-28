@@ -358,6 +358,7 @@ namespace GaussianSplatting.Runtime
 		Quaternion m_LastCameraRotation;
 		bool m_CameraPositionInitialized;
 		bool m_ForceInitialSort = true;
+		int m_InitialFrameCounter = 0;
 		internal int m_AdaptiveSortFrameCounter;
 
 		// Chunk sort cache
@@ -370,6 +371,21 @@ namespace GaussianSplatting.Runtime
 		// Distance-based optimization
 		float m_AverageChunkDistance;
 		int m_DistanceFrameSkipCounter;
+
+		// Parameter tracking for cache invalidation
+		float m_LastFrustumCullingTolerance;
+		float m_LastChunkCacheDistanceThreshold;
+		float m_LastDistantChunkThreshold;
+		bool m_LastFrustumCullingEnabled;
+		bool m_LastChunkSortCacheEnabled;
+		bool m_LastDistanceBasedSortEnabled;
+		bool m_ParametersInitialized;
+
+		// Smoothing for movement detection to reduce flickering
+		float m_SmoothedMovementSpeed;
+		float m_SmoothedRotationSpeed;
+		int m_ConsecutiveMovementFrames;
+		const float kMovementSmoothingFactor = 0.8f;
 
 		static readonly ProfilerMarker s_ProfSort = new(ProfilerCategory.Render, "GaussianSplat.Sort", MarkerFlags.SampleGPU);
 
@@ -639,6 +655,16 @@ namespace GaussianSplatting.Runtime
 		public void OnEnable()
 		{
 			m_FrameCounter = 0;
+
+			// Reset movement tracking variables to ensure proper initialization
+			m_SmoothedMovementSpeed = 0f;
+			m_SmoothedRotationSpeed = 0f;
+			m_ConsecutiveMovementFrames = 0;
+			m_CameraPositionInitialized = false;
+			m_ForceInitialSort = true;
+			m_InitialFrameCounter = 0;
+			m_ParametersInitialized = false;
+
 			if (!resourcesAreSetUp)
 				return;
 
@@ -647,6 +673,18 @@ namespace GaussianSplatting.Runtime
 
 			CreateResourcesForAsset();
 		}
+
+#if UNITY_EDITOR
+		void OnValidate()
+		{
+			// Invalidate cache when parameters change in editor
+			// Only do this during play mode when everything is properly initialized
+			if (Application.isPlaying && m_ParametersInitialized && HasValidAsset)
+			{
+				CheckParameterChanges();
+			}
+		}
+#endif
 
 		void SetAssetDataOnCS(CommandBuffer cmb, KernelIndices kernel)
 		{
@@ -836,15 +874,27 @@ namespace GaussianSplatting.Runtime
 
 		internal bool ShouldSort(Camera cam)
 		{
-			// Force initial sort to ensure proper rendering on startup
-			if (m_ForceInitialSort)
+			// Check for parameter changes that require cache invalidation
+			// Only do this if we have a valid asset to avoid initialization issues
+			if (HasValidAsset)
 			{
-				m_ForceInitialSort = false;
-				m_LastCameraPosition = cam.transform.position;
-				m_LastCameraRotation = cam.transform.rotation;
-				m_CameraPositionInitialized = true;
-				InvalidateSortCache(); // Invalidate cache on init
-				return true; // Force sort on very first frame
+				CheckParameterChanges();
+			}
+
+			// Force initial sort to ensure proper rendering on startup
+			// Sort multiple times during the first few frames to ensure correct initialization
+			m_InitialFrameCounter++;
+			if (m_ForceInitialSort || m_InitialFrameCounter <= 3)
+			{
+				if (m_ForceInitialSort)
+				{
+					m_ForceInitialSort = false;
+					m_LastCameraPosition = cam.transform.position;
+					m_LastCameraRotation = cam.transform.rotation;
+					m_CameraPositionInitialized = true;
+					InvalidateSortCache(); // Invalidate cache on init
+				}
+				return true; // Force sort during first few frames
 			}
 
 			// Fallback to basic frame counter if adaptive sorting is disabled
@@ -870,12 +920,28 @@ namespace GaussianSplatting.Runtime
 			float positionDelta = Vector3.Distance(currentPosition, m_LastCameraPosition);
 			float rotationDelta = Quaternion.Angle(currentRotation, m_LastCameraRotation);
 
+			// Smooth movement detection to reduce flickering
+			m_SmoothedMovementSpeed = Mathf.Lerp(m_SmoothedMovementSpeed, positionDelta, 1.0f - kMovementSmoothingFactor);
+			m_SmoothedRotationSpeed = Mathf.Lerp(m_SmoothedRotationSpeed, rotationDelta, 1.0f - kMovementSmoothingFactor);
+
 			// Update last known position/rotation
 			m_LastCameraPosition = currentPosition;
 			m_LastCameraRotation = currentRotation;
 
-			// Check if camera is moving significantly
-			bool cameraMoving = positionDelta > m_CameraMovementThreshold || rotationDelta > m_CameraRotationThreshold;
+			// Check if camera is moving significantly (using smoothed values and hysteresis)
+			bool currentlyMoving = m_SmoothedMovementSpeed > m_CameraMovementThreshold || m_SmoothedRotationSpeed > m_CameraRotationThreshold;
+
+			// Use hysteresis to prevent flickering: require several frames of movement to consider "moving"
+			if (currentlyMoving)
+			{
+				m_ConsecutiveMovementFrames++;
+			}
+			else
+			{
+				m_ConsecutiveMovementFrames = Mathf.Max(0, m_ConsecutiveMovementFrames - 1);
+			}
+
+			bool cameraMoving = m_ConsecutiveMovementFrames >= 2; // Require at least 2 frames of movement
 
 			// Check sort cache validity if enabled
 			if (m_ChunkSortCacheEnabled && m_SortCacheValid)
@@ -883,13 +949,19 @@ namespace GaussianSplatting.Runtime
 				float sortDistanceDelta = Vector3.Distance(currentPosition, m_LastSortCameraPosition);
 				float sortRotationDelta = Quaternion.Angle(currentRotation, m_LastSortCameraRotation);
 
-				// Cache is valid only if both position AND rotation haven't changed significantly
+				// During rapid movement, disable cache to ensure frequent sorting
+				// Cache is valid only if both position AND rotation haven't changed significantly AND not moving rapidly
 				if (sortDistanceDelta < m_ChunkCacheDistanceThreshold &&
 				    sortRotationDelta < 2.0f && // 2 degrees rotation threshold for cache
-				    !cameraMoving)
+				    m_ConsecutiveMovementFrames < 5) // Disable cache during sustained rapid movement
 				{
 					// Cache is still valid, skip sorting
 					return false;
+				}
+				else if (cameraMoving)
+				{
+					// Force cache invalidation during movement to prevent flickering
+					InvalidateSortCache();
 				}
 			}
 
@@ -923,6 +995,45 @@ namespace GaussianSplatting.Runtime
 		void InvalidateSortCache()
 		{
 			m_SortCacheValid = false;
+		}
+
+		void CheckParameterChanges()
+		{
+			// Initialize parameters tracking on first call
+			if (!m_ParametersInitialized)
+			{
+				m_LastFrustumCullingTolerance = m_FrustumCullingTolerance;
+				m_LastChunkCacheDistanceThreshold = m_ChunkCacheDistanceThreshold;
+				m_LastDistantChunkThreshold = m_DistantChunkThreshold;
+				m_LastFrustumCullingEnabled = m_FrustumCullingEnabled;
+				m_LastChunkSortCacheEnabled = m_ChunkSortCacheEnabled;
+				m_LastDistanceBasedSortEnabled = m_DistanceBasedSortEnabled;
+				m_ParametersInitialized = true;
+				return;
+			}
+
+			// Check if any critical parameters have changed
+			bool parametersChanged =
+				!Mathf.Approximately(m_LastFrustumCullingTolerance, m_FrustumCullingTolerance) ||
+				!Mathf.Approximately(m_LastChunkCacheDistanceThreshold, m_ChunkCacheDistanceThreshold) ||
+				!Mathf.Approximately(m_LastDistantChunkThreshold, m_DistantChunkThreshold) ||
+				m_LastFrustumCullingEnabled != m_FrustumCullingEnabled ||
+				m_LastChunkSortCacheEnabled != m_ChunkSortCacheEnabled ||
+				m_LastDistanceBasedSortEnabled != m_DistanceBasedSortEnabled;
+
+			if (parametersChanged)
+			{
+				// Invalidate cache when rendering parameters change
+				InvalidateSortCache();
+
+				// Update stored values
+				m_LastFrustumCullingTolerance = m_FrustumCullingTolerance;
+				m_LastChunkCacheDistanceThreshold = m_ChunkCacheDistanceThreshold;
+				m_LastDistantChunkThreshold = m_DistantChunkThreshold;
+				m_LastFrustumCullingEnabled = m_FrustumCullingEnabled;
+				m_LastChunkSortCacheEnabled = m_ChunkSortCacheEnabled;
+				m_LastDistanceBasedSortEnabled = m_DistanceBasedSortEnabled;
+			}
 		}
 
 		void UpdateSortCache(Camera cam, Matrix4x4 matrix)

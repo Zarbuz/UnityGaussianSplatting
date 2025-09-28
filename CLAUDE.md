@@ -28,19 +28,19 @@ This is a Unity package for 3D Gaussian Splatting rendering and tools. The packa
 
 This is a Unity package, so development happens within Unity Editor:
 
-1. **Testing**: Open one of the example projects:
-   - `projects/GaussianExample/` (Built-in RP)
-   - `projects/GaussianExample-URP/` (Universal RP)
-   - `projects/GaussianExample-HDRP/` (High Definition RP)
-
-2. **Package Installation**: The package can be installed via:
+1. **Package Installation**: The package can be installed via:
    - Package Manager using git URL: `https://github.com/Zarbuz/UnityGaussianSplatting.git`
    - Local package reference in manifest.json
    - Adding as local package development dependency
 
-3. **Asset Creation**: Use `Tools -> Gaussian Splats -> Create GaussianSplatAsset` menu to convert PLY/SPZ files
+2. **Asset Creation**: Use `Tools -> Gaussian Splats -> Create GaussianSplatAsset` menu to convert PLY/SPZ files
 
-4. **Package Development**: The package source is in `/package/` directory, with projects in `/projects/` for testing different render pipelines
+3. **Testing**: Create a new Unity project and add this package to test different render pipelines:
+   - Built-in Render Pipeline (default)
+   - Universal Render Pipeline (requires Unity 6.0+)
+   - High Definition Render Pipeline
+
+4. **Package Development**: The package source is in the root directory, structured as a standard Unity package
 
 ## Key Architecture Concepts
 
