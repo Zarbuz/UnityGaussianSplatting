@@ -387,6 +387,12 @@ namespace GaussianSplatting.Runtime
 		int m_ConsecutiveMovementFrames;
 		const float kMovementSmoothingFactor = 0.8f;
 
+		// Runtime GUI for parameter tweaking
+		bool m_ShowRuntimeGUI = false;
+		Rect m_GUIWindowRect = new Rect(20, 20, 350, 600);
+		Vector2 m_ScrollPosition = Vector2.zero;
+		uint m_LastVisibleSplatCount = 0;
+
 		static readonly ProfilerMarker s_ProfSort = new(ProfilerCategory.Render, "GaussianSplat.Sort", MarkerFlags.SampleGPU);
 
 		internal static class Props
@@ -685,6 +691,174 @@ namespace GaussianSplatting.Runtime
 			}
 		}
 #endif
+
+
+		void OnGUI()
+		{
+			if (!m_ShowRuntimeGUI)
+				return;
+
+			m_GUIWindowRect = GUI.Window(0, m_GUIWindowRect, DrawRuntimeGUI, "Gaussian Splat Runtime Settings");
+		}
+
+		void DrawRuntimeGUI(int windowID)
+		{
+			GUILayout.BeginVertical();
+
+			m_ScrollPosition = GUILayout.BeginScrollView(m_ScrollPosition, GUILayout.Height(550));
+
+			// Asset Info
+			GUILayout.Label("Asset Info", GUI.skin.box);
+			GUILayout.Label($"Total Splat Count: {m_SplatCount:N0}");
+
+			if (m_FrustumCullingEnabled && m_LastVisibleSplatCount > 0)
+			{
+				float percentage = (m_LastVisibleSplatCount / (float)m_SplatCount) * 100f;
+				GUILayout.Label($"Visible Splats: {m_LastVisibleSplatCount:N0} ({percentage:F1}%)");
+				uint culledCount = (uint)m_SplatCount - m_LastVisibleSplatCount;
+				float culledPercentage = (culledCount / (float)m_SplatCount) * 100f;
+				GUILayout.Label($"Culled Splats: {culledCount:N0} ({culledPercentage:F1}%)");
+			}
+			else if (m_FrustumCullingEnabled)
+			{
+				GUILayout.Label($"Visible Splats: Calculating...");
+			}
+			else
+			{
+				GUILayout.Label($"Visible Splats: {m_SplatCount:N0} (100.0%) - Culling disabled");
+			}
+
+			GUILayout.Label($"Has Valid Asset: {HasValidAsset}");
+			GUILayout.Label($"Format Version: {(m_Asset ? m_Asset.formatVersion.ToString() : "N/A")}");
+
+			GUILayout.Space(10);
+
+			// Rendering Parameters
+			GUILayout.Label("Rendering", GUI.skin.box);
+			m_SplatScale = GUILayout.HorizontalSlider(m_SplatScale, 0.1f, 2.0f);
+			GUILayout.Label($"Splat Scale: {m_SplatScale:F2}");
+
+			m_OpacityScale = GUILayout.HorizontalSlider(m_OpacityScale, 0.1f, 2.0f);
+			GUILayout.Label($"Opacity Scale: {m_OpacityScale:F2}");
+
+			GUILayout.Space(10);
+
+			// Sorting Parameters
+			GUILayout.Label("Sorting", GUI.skin.box);
+			m_AdaptiveSortingEnabled = GUILayout.Toggle(m_AdaptiveSortingEnabled, "Adaptive Sorting");
+
+			m_SortNthFrame = (int)GUILayout.HorizontalSlider(m_SortNthFrame, 1, 30);
+			GUILayout.Label($"Sort Every N Frames: {m_SortNthFrame}");
+
+			if (m_AdaptiveSortingEnabled)
+			{
+				m_CameraMovementThreshold = GUILayout.HorizontalSlider(m_CameraMovementThreshold, 0.01f, 1.0f);
+				GUILayout.Label($"Movement Threshold: {m_CameraMovementThreshold:F3}");
+
+				m_CameraRotationThreshold = GUILayout.HorizontalSlider(m_CameraRotationThreshold, 0.5f, 10.0f);
+				GUILayout.Label($"Rotation Threshold: {m_CameraRotationThreshold:F1}°");
+
+				m_FastSortFrequency = (int)GUILayout.HorizontalSlider(m_FastSortFrequency, 1, 10);
+				GUILayout.Label($"Fast Sort Frequency: {m_FastSortFrequency}");
+			}
+
+			GUILayout.Space(10);
+
+			// Cache Settings
+			GUILayout.Label("Cache System", GUI.skin.box);
+			m_ChunkSortCacheEnabled = GUILayout.Toggle(m_ChunkSortCacheEnabled, "Chunk Sort Cache");
+
+			if (m_ChunkSortCacheEnabled)
+			{
+				m_ChunkCacheDistanceThreshold = GUILayout.HorizontalSlider(m_ChunkCacheDistanceThreshold, 0.1f, 2.0f);
+				GUILayout.Label($"Cache Distance Threshold: {m_ChunkCacheDistanceThreshold:F2}");
+			}
+
+			GUILayout.Space(10);
+
+			// Distance-based Optimization
+			GUILayout.Label("Distance Optimization", GUI.skin.box);
+			m_DistanceBasedSortEnabled = GUILayout.Toggle(m_DistanceBasedSortEnabled, "Distance-based Sort");
+
+			if (m_DistanceBasedSortEnabled)
+			{
+				m_DistantChunkThreshold = GUILayout.HorizontalSlider(m_DistantChunkThreshold, 5.0f, 100.0f);
+				GUILayout.Label($"Distant Chunk Threshold: {m_DistantChunkThreshold:F1}");
+				GUILayout.Label($"Average Chunk Distance: {m_AverageChunkDistance:F1}");
+			}
+
+			GUILayout.Space(10);
+
+			// Frustum Culling
+			GUILayout.Label("Frustum Culling", GUI.skin.box);
+			m_FrustumCullingEnabled = GUILayout.Toggle(m_FrustumCullingEnabled, "Enable Frustum Culling");
+
+			if (m_FrustumCullingEnabled)
+			{
+				m_FrustumCullingTolerance = GUILayout.HorizontalSlider(m_FrustumCullingTolerance, 0.5f, 10.0f);
+				GUILayout.Label($"Culling Tolerance: {m_FrustumCullingTolerance:F1}");
+			}
+
+			GUILayout.Space(10);
+
+			// Debug Info
+			GUILayout.Label("Debug Info", GUI.skin.box);
+			GUILayout.Label($"Frame Counter: {m_FrameCounter}");
+			GUILayout.Label($"Adaptive Sort Counter: {m_AdaptiveSortFrameCounter}");
+			GUILayout.Label($"Initial Frame Counter: {m_InitialFrameCounter}");
+			GUILayout.Label($"Consecutive Movement Frames: {m_ConsecutiveMovementFrames}");
+			GUILayout.Label($"Smoothed Movement Speed: {m_SmoothedMovementSpeed:F4}");
+			GUILayout.Label($"Smoothed Rotation Speed: {m_SmoothedRotationSpeed:F2}°");
+			GUILayout.Label($"Cache Valid: {m_SortCacheValid}");
+
+			GUILayout.Space(10);
+
+			// Actions
+			if (GUILayout.Button("Force Sort"))
+			{
+				InvalidateSortCache();
+				m_ForceInitialSort = true;
+			}
+
+			if (GUILayout.Button("Reset to Defaults"))
+			{
+				ResetToDefaults();
+			}
+
+			GUILayout.EndScrollView();
+
+			// Close button
+			if (GUILayout.Button("Close (Ctrl+G)"))
+			{
+				m_ShowRuntimeGUI = false;
+			}
+
+			GUILayout.EndVertical();
+
+			// Make window draggable
+			GUI.DragWindow();
+		}
+
+		void ResetToDefaults()
+		{
+			m_SplatScale = 1.0f;
+			m_OpacityScale = 1.0f;
+			m_SortNthFrame = 4;
+			m_AdaptiveSortingEnabled = true;
+			m_CameraMovementThreshold = 0.1f;
+			m_CameraRotationThreshold = 1.0f;
+			m_FastSortFrequency = 1;
+			m_ChunkSortCacheEnabled = true;
+			m_ChunkCacheDistanceThreshold = 0.5f;
+			m_DistanceBasedSortEnabled = true;
+			m_DistantChunkThreshold = 20.0f;
+			m_FrustumCullingEnabled = true;
+			m_FrustumCullingTolerance = 2.0f;
+
+			// Force cache invalidation to apply changes
+			InvalidateSortCache();
+			m_ForceInitialSort = true;
+		}
 
 		void SetAssetDataOnCS(CommandBuffer cmb, KernelIndices kernel)
 		{
@@ -1305,9 +1479,7 @@ namespace GaussianSplatting.Runtime
 						if (!readback.hasError)
 						{
 							var data = readback.GetData<uint>();
-							uint visibleCount = data[1]; // instanceCount
-							float percentage = (visibleCount / (float)m_SplatCount) * 100f;
-							Debug.Log($"Frustum Culling: {visibleCount:N0}/{m_SplatCount:N0} splats visible ({percentage:F1}%)");
+							m_LastVisibleSplatCount = data[1]; // instanceCount
 						}
 					});
 				}
@@ -1315,6 +1487,7 @@ namespace GaussianSplatting.Runtime
 			else
 			{
 				// Fallback: use full splat count
+				m_LastVisibleSplatCount = (uint)m_SplatCount; // Set to full count when culling is disabled
 				var indirectArgs = new uint[5];
 				indirectArgs[0] = (uint)indexCount;           // indexCountPerInstance
 				indirectArgs[1] = (uint)m_SplatCount;         // instanceCount (all splats)
@@ -1327,6 +1500,12 @@ namespace GaussianSplatting.Runtime
 
 		public void Update()
 		{
+			// Toggle runtime GUI with Ctrl+G
+			if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.G))
+			{
+				m_ShowRuntimeGUI = !m_ShowRuntimeGUI;
+			}
+
 			var curHash = m_Asset ? m_Asset.dataHash : new Hash128();
 			if (m_PrevAsset != m_Asset || m_PrevHash != curHash)
 			{
