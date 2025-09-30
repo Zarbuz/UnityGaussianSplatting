@@ -917,9 +917,25 @@ void CSCullSplatsInPartialChunks(uint3 id : SV_DispatchThreadID)
             {
                 float3 ndc = clipPos.xyz / clipPos.w;
 
-                // Use a fixed tolerance that works well in practice
-                // This accounts for typical splat sizes without being overly complex
-                float tolerance = 0.15 * _FrustumCullingTolerance;
+                // Distance-based tolerance with slightly more tolerance for potential elongated shapes
+                float distanceToCamera = abs(viewPos.z);
+
+                // Base minimal tolerance
+                float baseTolerance = 0.02;
+
+                // Add distance-based component
+                float distanceTolerance = min(distanceToCamera * 0.01, 0.12);
+
+                // Add a small extra tolerance for potentially elongated splats
+                // Since we can't reliably use LoadSplatScale, use distance as proxy
+                // Assumption: elongated splats are more common at medium distances
+                float elongationTolerance = 0;
+                if (distanceToCamera > 5.0 && distanceToCamera < 30.0)
+                {
+                    elongationTolerance = 0.03; // Small extra tolerance for mid-distance splats
+                }
+
+                float tolerance = (baseTolerance + distanceTolerance + elongationTolerance) * _FrustumCullingTolerance;
 
                 // NDC coordinates should be in [-1, 1] range for visible objects
                 // Note: In Unity, Z is 0 to 1 in NDC space (not -1 to 1)
