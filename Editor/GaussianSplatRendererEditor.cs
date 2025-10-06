@@ -37,6 +37,9 @@ namespace GaussianSplatting.Editor
 		SerializedProperty m_PropDistantChunkThreshold;
 		SerializedProperty m_PropFrustumCullingEnabled;
 		SerializedProperty m_PropFrustumCullingTolerance;
+		SerializedProperty m_PropPartitionVisibilityCulling;
+		SerializedProperty m_PropShowPartitionGizmos;
+		SerializedProperty m_PropPartitionBoundsExpansion;
 		SerializedProperty m_PropSortMode;
 		SerializedProperty m_PropRenderMode;
 		SerializedProperty m_PropPointDisplaySize;
@@ -90,6 +93,9 @@ namespace GaussianSplatting.Editor
 			m_PropDistantChunkThreshold = serializedObject.FindProperty("m_DistantChunkThreshold");
 			m_PropFrustumCullingEnabled = serializedObject.FindProperty("m_FrustumCullingEnabled");
 			m_PropFrustumCullingTolerance = serializedObject.FindProperty("m_FrustumCullingTolerance");
+			m_PropPartitionVisibilityCulling = serializedObject.FindProperty("m_PartitionVisibilityCulling");
+			m_PropShowPartitionGizmos = serializedObject.FindProperty("m_ShowPartitionGizmos");
+			m_PropPartitionBoundsExpansion = serializedObject.FindProperty("m_PartitionBoundsExpansion");
 			m_PropSortMode = serializedObject.FindProperty("m_SortMode");
 			m_PropRenderMode = serializedObject.FindProperty("m_RenderMode");
 			m_PropPointDisplaySize = serializedObject.FindProperty("m_PointDisplaySize");
@@ -162,6 +168,9 @@ namespace GaussianSplatting.Editor
 			}
 			EditorGUILayout.PropertyField(m_PropFrustumCullingEnabled);
 			EditorGUILayout.PropertyField(m_PropFrustumCullingTolerance);
+			EditorGUILayout.PropertyField(m_PropPartitionVisibilityCulling);
+			EditorGUILayout.PropertyField(m_PropShowPartitionGizmos);
+			EditorGUILayout.PropertyField(m_PropPartitionBoundsExpansion);
 			EditorGUI.BeginChangeCheck();
 			EditorGUILayout.PropertyField(m_PropSortMode);
 			if (EditorGUI.EndChangeCheck())

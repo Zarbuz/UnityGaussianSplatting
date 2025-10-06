@@ -33,6 +33,13 @@ namespace GaussianSplatting.Runtime
 
 		CommandBuffer m_CommandBuffer;
 
+		public void SetSplatActive(SplatPartition partition, bool active)
+		{
+			// Note: This is a simplified version for partition support
+			// The partition activation is now handled through GaussianSplatRenderer.RegisterPartition
+			partition.IsActive = active;
+		}
+
 		public void RegisterSplat(GaussianSplatRenderer r)
 		{
 			if (m_Splats.Count == 0)
@@ -82,6 +89,9 @@ namespace GaussianSplatting.Runtime
 			{
 				var gs = kvp.Key;
 				if (gs == null || !gs.isActiveAndEnabled || !gs.HasValidAsset || !gs.HasValidRenderSetup)
+					continue;
+				// Check partition visibility culling
+				if (gs.m_PartitionVisibilityCulling && !gs.IsVisibleInCamera(cam))
 					continue;
 				m_ActiveSplats.Add((kvp.Key, kvp.Value));
 			}
@@ -292,6 +302,15 @@ namespace GaussianSplatting.Runtime
 		[Tooltip("Frustum culling tolerance to avoid cutting splats at screen edges (higher values = more stable, less culling)")]
 		public float m_FrustumCullingTolerance = 2.0f;
 
+		[Header("Partition Visibility")]
+		[Tooltip("Enable partition-based visibility culling (skip rendering entirely if partition is not in view)")]
+		public bool m_PartitionVisibilityCulling = true;
+		[Tooltip("Show partition gizmos in Scene view (green=visible/rendering, red=culled, yellow=disabled)")]
+		public bool m_ShowPartitionGizmos = true;
+		[Range(0f, 20f)]
+		[Tooltip("Extra bounds expansion for partition culling (higher = less aggressive culling, less pop-in)")]
+		public float m_PartitionBoundsExpansion = 5.0f;
+
 		public SortMode m_SortMode = SortMode.Radix;
 
 		public RenderMode m_RenderMode = RenderMode.Splats;
@@ -491,6 +510,63 @@ namespace GaussianSplatting.Runtime
 			m_GpuSplatVisibility != null && m_GpuVisibleIndices != null && m_GpuVisibleCount != null && m_CSStreamCompact != null;
 
 		const int kGpuViewDataSize = 40;
+
+		// Partition support methods (simplified stubs for now)
+		public void RegisterPartition(SplatPartition partition)
+		{
+			// Stub: In the full implementation, this would merge partition data into the renderer
+			Debug.LogWarning("RegisterPartition is a stub - partition support requires full implementation");
+		}
+
+		public void UnregisterPartition(SplatPartition partition)
+		{
+			// Stub: In the full implementation, this would remove partition data from the renderer
+		}
+
+		public void ReserveResources(SplatPartition[] partitions)
+		{
+			// Stub: In the full implementation, this would pre-allocate GPU buffers for all partitions
+			Debug.LogWarning("ReserveResources is a stub - partition support requires full implementation");
+		}
+
+		public bool IsVisibleInCamera(Camera cam)
+		{
+			if (!m_PartitionVisibilityCulling)
+				return true;
+
+			// Calculate bounds of this renderer
+			Bounds bounds = CalculateLocalBounds();
+
+			// Transform bounds to world space
+			bounds.center = transform.TransformPoint(bounds.center);
+			bounds.extents = Vector3.Scale(bounds.extents, transform.lossyScale);
+
+			// IMPORTANT: Splats extend beyond their position based on their scale
+			// We need to expand bounds significantly to account for:
+			// 1. Individual splat sizes (can be quite large)
+			// 2. Splat scale multiplier
+			// 3. Safety margin for edge cases
+			float splatSizeEstimate = Mathf.Max(bounds.size.x, bounds.size.y, bounds.size.z) * 0.1f; // 10% of bounds as splat size estimate
+			float expansionFactor = m_PartitionBoundsExpansion + splatSizeEstimate * m_SplatScale;
+			bounds.Expand(expansionFactor);
+
+			// Test against camera frustum
+			Plane[] frustumPlanes = GeometryUtility.CalculateFrustumPlanes(cam);
+			return GeometryUtility.TestPlanesAABB(frustumPlanes, bounds);
+		}
+
+		Bounds CalculateLocalBounds()
+		{
+			if (!HasValidAsset)
+				return new Bounds(Vector3.zero, Vector3.one);
+
+			Vector3 min = m_Asset.boundsMin;
+			Vector3 max = m_Asset.boundsMax;
+			Vector3 center = (min + max) * 0.5f;
+			Vector3 size = max - min;
+
+			return new Bounds(center, size);
+		}
 
 		void CreateResourcesForAsset()
 		{
@@ -1950,5 +2026,57 @@ namespace GaussianSplatting.Runtime
 		}
 
 		public GraphicsBuffer GpuEditDeleted => m_GpuEditDeleted;
+
+#if UNITY_EDITOR
+		void OnDrawGizmos()
+		{
+			if (!m_ShowPartitionGizmos)
+				return;
+
+			// Calculate bounds for this partition
+			Bounds bounds = CalculateLocalBounds();
+
+			// Transform to world space
+			Vector3 worldCenter = transform.TransformPoint(bounds.center);
+			Vector3 worldSize = Vector3.Scale(bounds.size, transform.lossyScale);
+
+			// Determine color based on state
+			Color gizmoColor;
+			if (!isActiveAndEnabled)
+			{
+				// Yellow: Renderer is disabled
+				gizmoColor = new Color(1f, 1f, 0f, 0.3f);
+			}
+			else if (Application.isPlaying)
+			{
+				// In play mode, check if this partition is being rendered
+				Camera cam = Camera.main;
+				if (cam != null && m_PartitionVisibilityCulling)
+				{
+					bool isVisible = IsVisibleInCamera(cam);
+					// Green: Visible and rendering, Red: Culled
+					gizmoColor = isVisible ? new Color(0f, 1f, 0f, 0.3f) : new Color(1f, 0f, 0f, 0.3f);
+				}
+				else
+				{
+					// Green: Rendering (culling disabled or no camera)
+					gizmoColor = new Color(0f, 1f, 0f, 0.3f);
+				}
+			}
+			else
+			{
+				// Blue: Edit mode
+				gizmoColor = new Color(0f, 0.5f, 1f, 0.2f);
+			}
+
+			// Draw the bounds
+			Gizmos.color = gizmoColor;
+			Gizmos.DrawCube(worldCenter, worldSize);
+
+			// Draw wireframe for better visibility
+			Gizmos.color = new Color(gizmoColor.r, gizmoColor.g, gizmoColor.b, 1f);
+			Gizmos.DrawWireCube(worldCenter, worldSize);
+		}
+#endif
 	}
 }

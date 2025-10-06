@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using GaussianSplatting.Editor.Utils;
 using GaussianSplatting.Runtime;
 using Unity.Burst;
@@ -51,6 +52,9 @@ namespace GaussianSplatting.Editor
         int m_PrevVertexCount;
         long m_PrevFileSize;
 
+        private readonly SplitConfig _splitConfig = new SplitConfig();
+        bool _toggleSplitSettings = false;
+
         bool isUsingChunks =>
             m_FormatPos != GaussianSplatAsset.VectorFormat.Float32 ||
             m_FormatScale != GaussianSplatAsset.VectorFormat.Float32 ||
@@ -79,6 +83,7 @@ namespace GaussianSplatting.Editor
 
         void OnGUI()
         {
+            _splitConfig.AutoDetectSceneObjects();
             EditorGUILayout.Space();
             GUILayout.Label("Input data", EditorStyles.boldLabel);
             var rect = EditorGUILayout.GetControlRect(true);
@@ -171,9 +176,16 @@ namespace GaussianSplatting.Editor
 
 
             EditorGUILayout.Space();
+
+            // Splitting settings
+            _toggleSplitSettings = EditorGUILayout.BeginToggleGroup("Splat Splitting", _toggleSplitSettings);
+            _splitConfig.DrawEditorGUI(_toggleSplitSettings);
+            EditorGUILayout.EndToggleGroup();
+
+            EditorGUILayout.Space();
             GUILayout.BeginHorizontal();
             GUILayout.Space(30);
-            if (GUILayout.Button("Create Asset"))
+            if (GUILayout.Button($"Create {_splitConfig.NumAssetsToCreate} Asset(s)"))
             {
                 CreateAsset();
             }
@@ -262,81 +274,117 @@ namespace GaussianSplatting.Editor
 
             EditorUtility.DisplayProgressBar(kProgressTitle, "Reading data files", 0.0f);
             GaussianSplatAsset.CameraInfo[] cameras = LoadJsonCamerasFile(m_InputFile, m_ImportCameras);
-            using NativeArray<InputSplatData> inputSplats = LoadInputSplatFile(m_InputFile);
-            if (inputSplats.Length == 0)
+            NativeArray<InputSplatData> inputSplatsAll = LoadInputSplatFile(m_InputFile);
+            if (inputSplatsAll.Length == 0)
             {
                 EditorUtility.ClearProgressBar();
+                inputSplatsAll.Dispose();
                 return;
             }
 
-            float3 boundsMin, boundsMax;
-            var boundsJob = new CalcBoundsJob
-            {
-                m_BoundsMin = &boundsMin,
-                m_BoundsMax = &boundsMax,
-                m_SplatData = inputSplats
-            };
-            boundsJob.Schedule().Complete();
+            // Calculate partitions
+            Dictionary<int, NativeArray<InputSplatData>> partitionedSplatData = _splitConfig.CalculatePartitions(inputSplatsAll);
 
-            EditorUtility.DisplayProgressBar(kProgressTitle, "Morton reordering", 0.05f);
-            ReorderMorton(inputSplats, boundsMin, boundsMax);
+            string originalName = Path.GetFileNameWithoutExtension(FilePickerControl.PathToDisplayString(m_InputFile));
 
-            // cluster SHs
-            NativeArray<int> splatSHIndices = default;
-            NativeArray<GaussianSplatAsset.SHTableItemFloat16> clusteredSHs = default;
-            if (m_FormatSH >= GaussianSplatAsset.SHFormat.Cluster64k)
+            // Track created assets for scene setup
+            Dictionary<int, GaussianSplatAsset> createdAssets = new Dictionary<int, GaussianSplatAsset>();
+
+            foreach (var partitionKvp in partitionedSplatData)
             {
-                EditorUtility.DisplayProgressBar(kProgressTitle, "Cluster SHs", 0.2f);
-                ClusterSHs(inputSplats, m_FormatSH, out clusteredSHs, out splatSHIndices);
+                int partitionIdx = partitionKvp.Key;
+                var inputSplats = partitionKvp.Value;
+                string partitionSuffix = partitionIdx == -1 ? "Default" : $"P{partitionIdx:D2}";
+
+                float3 boundsMin, boundsMax;
+                var boundsJob = new CalcBoundsJob
+                {
+                    m_BoundsMin = &boundsMin,
+                    m_BoundsMax = &boundsMax,
+                    m_SplatData = inputSplats
+                };
+                boundsJob.Schedule().Complete();
+
+                EditorUtility.DisplayProgressBar(kProgressTitle, $"{partitionSuffix} - Morton reordering", 0.05f);
+                ReorderMorton(inputSplats, boundsMin, boundsMax);
+
+                // cluster SHs
+                NativeArray<int> splatSHIndices = default;
+                NativeArray<GaussianSplatAsset.SHTableItemFloat16> clusteredSHs = default;
+                if (m_FormatSH >= GaussianSplatAsset.SHFormat.Cluster64k)
+                {
+                    EditorUtility.DisplayProgressBar(kProgressTitle, $"{partitionSuffix} - Cluster SHs", 0.2f);
+                    ClusterSHs(inputSplats, m_FormatSH, out clusteredSHs, out splatSHIndices);
+                }
+
+                string baseName = originalName + $"_{partitionSuffix}";
+
+                EditorUtility.DisplayProgressBar(kProgressTitle, $"{partitionSuffix} - Creating data objects", 0.7f);
+                GaussianSplatAsset asset = ScriptableObject.CreateInstance<GaussianSplatAsset>();
+                asset.Initialize(inputSplats.Length, m_FormatPos, m_FormatScale, m_FormatColor, m_FormatSH, boundsMin, boundsMax, cameras);
+                asset.name = baseName;
+
+                if (!AssetDatabase.GetSubFolders(m_OutputFolder).Any(p => p.EndsWith(originalName)))
+                {
+                    AssetDatabase.CreateFolder(m_OutputFolder, originalName);
+                }
+
+                var dataHash = new Hash128((uint)asset.splatCount, (uint)asset.formatVersion, 0, 0);
+                string pathChunk = $"{m_OutputFolder}/{originalName}/{baseName}_chk.bytes";
+                string pathPos = $"{m_OutputFolder}/{originalName}/{baseName}_pos.bytes";
+                string pathOther = $"{m_OutputFolder}/{originalName}/{baseName}_oth.bytes";
+                string pathCol = $"{m_OutputFolder}/{originalName}/{baseName}_col.bytes";
+                string pathSh = $"{m_OutputFolder}/{originalName}/{baseName}_shs.bytes";
+
+                // if we are using full lossless (FP32) data, then do not use any chunking, and keep data as-is
+                bool useChunks = isUsingChunks;
+                if (useChunks)
+                    CreateChunkData(inputSplats, pathChunk, ref dataHash);
+                CreatePositionsData(inputSplats, pathPos, ref dataHash);
+                CreateOtherData(inputSplats, pathOther, ref dataHash, splatSHIndices);
+                CreateColorData(inputSplats, pathCol, ref dataHash);
+                CreateSHData(inputSplats, pathSh, ref dataHash, clusteredSHs);
+                asset.SetDataHash(dataHash);
+
+                splatSHIndices.Dispose();
+                clusteredSHs.Dispose();
+
+                // files are created, import them so we can get to the imported objects, ugh
+                EditorUtility.DisplayProgressBar(kProgressTitle, $"{partitionSuffix} - Initial texture import", 0.85f);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceUncompressedImport);
+
+                EditorUtility.DisplayProgressBar(kProgressTitle, $"{partitionSuffix} - Setup data onto asset", 0.95f);
+                asset.SetAssetFiles(
+                    useChunks ? AssetDatabase.LoadAssetAtPath<TextAsset>(pathChunk) : null,
+                    AssetDatabase.LoadAssetAtPath<TextAsset>(pathPos),
+                    AssetDatabase.LoadAssetAtPath<TextAsset>(pathOther),
+                    AssetDatabase.LoadAssetAtPath<TextAsset>(pathCol),
+                    AssetDatabase.LoadAssetAtPath<TextAsset>(pathSh));
+
+                var assetPath = $"{m_OutputFolder}/{originalName}/{baseName}.asset";
+                var savedAsset = CreateOrReplaceAsset(asset, assetPath);
+
+                EditorUtility.DisplayProgressBar(kProgressTitle, $"{partitionSuffix} - Saving assets", 0.99f);
+                AssetDatabase.SaveAssets();
+
+                // Store created asset
+                createdAssets[partitionIdx] = savedAsset;
+
+                inputSplats.Dispose();
             }
 
-            string baseName = Path.GetFileNameWithoutExtension(FilePickerControl.PathToDisplayString(m_InputFile));
-
-            EditorUtility.DisplayProgressBar(kProgressTitle, "Creating data objects", 0.7f);
-            GaussianSplatAsset asset = ScriptableObject.CreateInstance<GaussianSplatAsset>();
-            asset.Initialize(inputSplats.Length, m_FormatPos, m_FormatScale, m_FormatColor, m_FormatSH, boundsMin, boundsMax, cameras);
-            asset.name = baseName;
-
-            var dataHash = new Hash128((uint)asset.splatCount, (uint)asset.formatVersion, 0, 0);
-            string pathChunk = $"{m_OutputFolder}/{baseName}_chk.bytes";
-            string pathPos = $"{m_OutputFolder}/{baseName}_pos.bytes";
-            string pathOther = $"{m_OutputFolder}/{baseName}_oth.bytes";
-            string pathCol = $"{m_OutputFolder}/{baseName}_col.bytes";
-            string pathSh = $"{m_OutputFolder}/{baseName}_shs.bytes";
-
-            // if we are using full lossless (FP32) data, then do not use any chunking, and keep data as-is
-            bool useChunks = isUsingChunks;
-            if (useChunks)
-                CreateChunkData(inputSplats, pathChunk, ref dataHash);
-            CreatePositionsData(inputSplats, pathPos, ref dataHash);
-            CreateOtherData(inputSplats, pathOther, ref dataHash, splatSHIndices);
-            CreateColorData(inputSplats, pathCol, ref dataHash);
-            CreateSHData(inputSplats, pathSh, ref dataHash, clusteredSHs);
-            asset.SetDataHash(dataHash);
-
-            splatSHIndices.Dispose();
-            clusteredSHs.Dispose();
-
-            // files are created, import them so we can get to the imported objects, ugh
-            EditorUtility.DisplayProgressBar(kProgressTitle, "Initial texture import", 0.85f);
-            AssetDatabase.Refresh(ImportAssetOptions.ForceUncompressedImport);
-
-            EditorUtility.DisplayProgressBar(kProgressTitle, "Setup data onto asset", 0.95f);
-            asset.SetAssetFiles(
-                useChunks ? AssetDatabase.LoadAssetAtPath<TextAsset>(pathChunk) : null,
-                AssetDatabase.LoadAssetAtPath<TextAsset>(pathPos),
-                AssetDatabase.LoadAssetAtPath<TextAsset>(pathOther),
-                AssetDatabase.LoadAssetAtPath<TextAsset>(pathCol),
-                AssetDatabase.LoadAssetAtPath<TextAsset>(pathSh));
-
-            var assetPath = $"{m_OutputFolder}/{baseName}.asset";
-            var savedAsset = CreateOrReplaceAsset(asset, assetPath);
-
-            EditorUtility.DisplayProgressBar(kProgressTitle, "Saving assets", 0.99f);
-            AssetDatabase.SaveAssets();
             EditorUtility.ClearProgressBar();
+            AssetDatabase.Refresh();
 
-            Selection.activeObject = savedAsset;
+            // Create scene hierarchy if splitter exists
+            if (_splitConfig.Splitter != null)
+            {
+                CreateSceneHierarchy(originalName, createdAssets, _splitConfig.Splitter);
+            }
+            else if (createdAssets.Count == 1 && createdAssets.ContainsKey(-1))
+            {
+                Selection.activeObject = createdAssets[-1];
+            }
         }
 
         NativeArray<InputSplatData> LoadInputSplatFile(string filePath)
@@ -1128,6 +1176,94 @@ namespace GaussianSplatting.Editor
             public float[][] rotation;
             public float fx;
             public float fy;
+        }
+
+        void CreateSceneHierarchy(string baseName, Dictionary<int, GaussianSplatAsset> createdAssets, SplatSplitter splitter)
+        {
+            EditorUtility.DisplayProgressBar(kProgressTitle, "Creating scene hierarchy", 0.0f);
+
+            // Create parent GameObject
+            string parentName = $"{baseName}_Partitioned";
+            GameObject parent = new GameObject(parentName);
+
+            // Copy transform from splitter
+            parent.transform.position = splitter.transform.position;
+            parent.transform.rotation = splitter.transform.rotation;
+            parent.transform.localScale = splitter.transform.localScale;
+
+            // Get shaders from an existing renderer or use defaults
+            GaussianSplatRenderer existingRenderer = splitter.GetComponent<GaussianSplatRenderer>();
+            Shader shaderSplats = existingRenderer?.m_ShaderSplats;
+            Shader shaderComposite = existingRenderer?.m_ShaderComposite;
+            Shader shaderDebugPoints = existingRenderer?.m_ShaderDebugPoints;
+            Shader shaderDebugBoxes = existingRenderer?.m_ShaderDebugBoxes;
+            ComputeShader csSplatUtilitiesRadix = existingRenderer?.m_CSSplatUtilitiesRadix;
+            ComputeShader csSplatUtilitiesFFX = existingRenderer?.m_CSSplatUtilitiesFFX;
+            ComputeShader csStreamCompact = existingRenderer?.m_CSStreamCompact;
+
+            int progress = 0;
+            int total = createdAssets.Count;
+
+            foreach (var kvp in createdAssets)
+            {
+                int partitionIdx = kvp.Key;
+                GaussianSplatAsset asset = kvp.Value;
+
+                EditorUtility.DisplayProgressBar(kProgressTitle, $"Creating renderer {progress + 1}/{total}", (float)progress / total);
+
+                // Create child GameObject
+                string childName = partitionIdx == -1 ? "Default" : $"Partition_{partitionIdx:D3}";
+                GameObject child = new GameObject(childName);
+                child.transform.SetParent(parent.transform, false);
+
+                // Position at partition center (local to parent, since parent has splitter's transform)
+                if (partitionIdx >= 0)
+                {
+                    Bounds bounds = splitter.GetBounds(partitionIdx);
+                    // Convert world position to local position relative to parent
+                    Vector3 worldCenter = bounds.center;
+                    child.transform.position = worldCenter;
+                    // Then convert to local relative to parent (which has splitter's transform)
+                    Vector3 localOffset = splitter.transform.InverseTransformPoint(worldCenter);
+                    child.transform.localPosition = localOffset;
+                }
+                else
+                {
+                    child.transform.localPosition = Vector3.zero;
+                }
+
+                // Add GaussianSplatRenderer component
+                GaussianSplatRenderer renderer = child.AddComponent<GaussianSplatRenderer>();
+                renderer.m_Asset = asset;
+
+                // Configure partition settings
+                renderer.m_PartitionVisibilityCulling = true;
+                renderer.m_ShowPartitionGizmos = true;
+                renderer.m_PartitionBoundsExpansion = 5.0f; // Default expansion for partitions
+
+                // Copy shader references
+                if (shaderSplats != null) renderer.m_ShaderSplats = shaderSplats;
+                if (shaderComposite != null) renderer.m_ShaderComposite = shaderComposite;
+                if (shaderDebugPoints != null) renderer.m_ShaderDebugPoints = shaderDebugPoints;
+                if (shaderDebugBoxes != null) renderer.m_ShaderDebugBoxes = shaderDebugBoxes;
+                if (csSplatUtilitiesRadix != null) renderer.m_CSSplatUtilitiesRadix = csSplatUtilitiesRadix;
+                if (csSplatUtilitiesFFX != null) renderer.m_CSSplatUtilitiesFFX = csSplatUtilitiesFFX;
+                if (csStreamCompact != null) renderer.m_CSStreamCompact = csStreamCompact;
+
+                progress++;
+            }
+
+            // Disable the source splitter GameObject
+            splitter.gameObject.SetActive(false);
+
+            // Register undo
+            Undo.RegisterCreatedObjectUndo(parent, "Create Partitioned Gaussian Splat");
+
+            // Select the parent in hierarchy
+            Selection.activeGameObject = parent;
+
+            EditorUtility.ClearProgressBar();
+            Debug.Log($"Created {baseName}_Partitioned with {createdAssets.Count} partitions. Source splitter disabled.");
         }
     }
 }
