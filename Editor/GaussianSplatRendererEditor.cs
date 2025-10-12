@@ -32,14 +32,12 @@ namespace GaussianSplatting.Editor
 		SerializedProperty m_PropDistantChunkThreshold;
 		SerializedProperty m_PropFrustumCullingEnabled;
 		SerializedProperty m_PropFrustumCullingTolerance;
-		SerializedProperty m_PropSortMode;
 		SerializedProperty m_PropRenderMode;
 		SerializedProperty m_PropPointDisplaySize;
 		SerializedProperty m_PropShaderSplats;
 		SerializedProperty m_PropShaderComposite;
 		SerializedProperty m_PropShaderDebugPoints;
 		SerializedProperty m_PropShaderDebugBoxes;
-		SerializedProperty m_PropCSSplatUtilitiesRadix;
 		SerializedProperty m_PropCSSplatUtilitiesFFX;
 		SerializedProperty m_PropCSStreamCompact;
 
@@ -84,14 +82,12 @@ namespace GaussianSplatting.Editor
 			m_PropDistantChunkThreshold = serializedObject.FindProperty("m_DistantChunkThreshold");
 			m_PropFrustumCullingEnabled = serializedObject.FindProperty("m_FrustumCullingEnabled");
 			m_PropFrustumCullingTolerance = serializedObject.FindProperty("m_FrustumCullingTolerance");
-			m_PropSortMode = serializedObject.FindProperty("m_SortMode");
 			m_PropRenderMode = serializedObject.FindProperty("m_RenderMode");
 			m_PropPointDisplaySize = serializedObject.FindProperty("m_PointDisplaySize");
 			m_PropShaderSplats = serializedObject.FindProperty("m_ShaderSplats");
 			m_PropShaderComposite = serializedObject.FindProperty("m_ShaderComposite");
 			m_PropShaderDebugPoints = serializedObject.FindProperty("m_ShaderDebugPoints");
 			m_PropShaderDebugBoxes = serializedObject.FindProperty("m_ShaderDebugBoxes");
-			m_PropCSSplatUtilitiesRadix = serializedObject.FindProperty("m_CSSplatUtilitiesRadix");
 			m_PropCSSplatUtilitiesFFX = serializedObject.FindProperty("m_CSSplatUtilitiesFFX");
 			m_PropCSStreamCompact = serializedObject.FindProperty("m_CSStreamCompact");
 
@@ -155,15 +151,6 @@ namespace GaussianSplatting.Editor
 			}
 			EditorGUILayout.PropertyField(m_PropFrustumCullingEnabled);
 			EditorGUILayout.PropertyField(m_PropFrustumCullingTolerance);
-			EditorGUI.BeginChangeCheck();
-			EditorGUILayout.PropertyField(m_PropSortMode);
-			if (EditorGUI.EndChangeCheck())
-			{
-				if (gs.enabled)
-				{
-					gs.Reset(m_PropSortMode.intValue);
-				}
-			}
 			EditorGUILayout.Space();
 			GUILayout.Label("Debugging Tweaks", EditorStyles.boldLabel);
 			EditorGUILayout.PropertyField(m_PropRenderMode);
@@ -178,7 +165,6 @@ namespace GaussianSplatting.Editor
 				EditorGUILayout.PropertyField(m_PropShaderComposite);
 				EditorGUILayout.PropertyField(m_PropShaderDebugPoints);
 				EditorGUILayout.PropertyField(m_PropShaderDebugBoxes);
-				EditorGUILayout.PropertyField(m_PropCSSplatUtilitiesRadix);
 				EditorGUILayout.PropertyField(m_PropCSSplatUtilitiesFFX);
 				EditorGUILayout.PropertyField(m_PropCSStreamCompact);
 			}

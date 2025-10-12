@@ -35,3 +35,4 @@ projects/GaussianExample-URP/Build/
 
 # Example projects (not part of the package)
 /projects/
+.claude/settings.local.json

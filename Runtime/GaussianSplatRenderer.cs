@@ -248,12 +248,6 @@ namespace GaussianSplatting.Runtime
 	[ExecuteInEditMode]
 	public class GaussianSplatRenderer : MonoBehaviour
 	{
-		public enum SortMode
-		{
-			Radix,
-			FFX
-		}
-
 		public enum RenderMode
 		{
 			Splats,
@@ -307,8 +301,6 @@ namespace GaussianSplatting.Runtime
 		[Tooltip("Frustum culling tolerance to avoid cutting splats at screen edges (higher values = more stable, less culling)")]
 		public float m_FrustumCullingTolerance = 2.0f;
 
-		public SortMode m_SortMode = SortMode.Radix;
-
 		public RenderMode m_RenderMode = RenderMode.Splats;
 		[Range(1.0f, 15.0f)] public float m_PointDisplaySize = 3.0f;
 
@@ -318,7 +310,6 @@ namespace GaussianSplatting.Runtime
 		public Shader m_ShaderDebugBoxes;
 
 		[Tooltip("Gaussian splatting compute shader")]
-		public ComputeShader m_CSSplatUtilitiesRadix;
 		public ComputeShader m_CSSplatUtilitiesFFX;
 		public ComputeShader m_CSStreamCompact;
 
@@ -548,15 +539,7 @@ namespace GaussianSplatting.Runtime
 			InitFrustumCullingBuffers(splatCount);
 		}
 
-		bool IsRadixSupported => (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Direct3D12 ||
-								  SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan);
-		internal SortMode GetSortMode()
-		{
-			var mode = !IsRadixSupported ? SortMode.FFX : m_SortMode;
-			return mode;
-		}
-
-		ComputeShader m_CSSplatUtilities => GetSortMode() == SortMode.Radix ? m_CSSplatUtilitiesRadix : m_CSSplatUtilitiesFFX;
+		ComputeShader m_CSSplatUtilities => m_CSSplatUtilitiesFFX;
 
 		void InitSortBuffers(int count)
 		{
@@ -580,10 +563,7 @@ namespace GaussianSplatting.Runtime
 			m_SorterArgs.count = (uint)count;
 			if (m_Sorter.Valid)
 			{
-				if (GetSortMode() == SortMode.Radix)
-					m_SorterArgs.resources = GpuSortingRadix.SupportResourcesRadix.Load((uint)count);
-				else
-					m_SorterArgs.resources = GpuSortingFFX.SupportResourcesFFX.Load((uint)count);
+				m_SorterArgs.resources = GpuSortingFFX.SupportResourcesFFX.Load((uint)count);
 			}
 		}
 
@@ -623,13 +603,6 @@ namespace GaussianSplatting.Runtime
 			m_VisibleSplatCount = (uint)splatCount;
 		}
 
-		public void Reset(int value)
-		{
-			m_SortMode = value == 0 ? SortMode.Radix : SortMode.FFX;
-			OnDisable();
-			OnEnable();
-		}
-
 		bool resourcesAreSetUp => m_ShaderSplats != null && m_ShaderComposite != null && m_ShaderDebugPoints != null &&
 								  m_ShaderDebugBoxes != null && m_CSSplatUtilities != null && SystemInfo.supportsComputeShaders;
 
@@ -648,10 +621,7 @@ namespace GaussianSplatting.Runtime
 		{
 			if (m_Sorter == null && resourcesAreSetUp)
 			{
-				if (GetSortMode() == SortMode.Radix)
-					m_Sorter = new GpuSortingRadix(m_CSSplatUtilitiesRadix);
-				else
-					m_Sorter = new GpuSortingFFX(m_CSSplatUtilitiesFFX);
+				m_Sorter = new GpuSortingFFX(m_CSSplatUtilitiesFFX);
 			}
 
 			if (!m_Registered && resourcesAreSetUp)
