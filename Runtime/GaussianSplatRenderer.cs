@@ -272,7 +272,7 @@ namespace GaussianSplatting.Runtime
 		[Tooltip("Show only Spherical Harmonics contribution, using gray color")]
 		public bool m_SHOnly;
 		[Range(1, 30)]
-		[Tooltip("Base sort frequency - sort splats only every N frames when camera is static")]
+		[Tooltip("Sort frequency - sort splats every N frames")]
 		public int m_SortNthFrame = 1;
 		[Tooltip("Enable adaptive sorting based on camera movement")]
 		public bool m_AdaptiveSortingEnabled = true;
@@ -285,11 +285,6 @@ namespace GaussianSplatting.Runtime
 		[Range(1, 10)]
 		[Tooltip("Multiplier for sort frequency when camera is moving fast")]
 		public int m_FastSortFrequency = 1;
-		[Tooltip("Enable chunk-based sort caching to avoid re-sorting static chunks")]
-		public bool m_ChunkSortCacheEnabled = true;
-		[Range(0.1f, 2.0f)]
-		[Tooltip("Distance threshold for chunk sort cache invalidation")]
-		public float m_ChunkCacheDistanceThreshold = 0.5f;
 		[Tooltip("Enable distance-based sort frequency optimization")]
 		public bool m_DistanceBasedSortEnabled = true;
 		[Range(5.0f, 100.0f)]
@@ -300,6 +295,33 @@ namespace GaussianSplatting.Runtime
 		[Range(0.5f, 10.0f)]
 		[Tooltip("Frustum culling tolerance to avoid cutting splats at screen edges (higher values = more stable, less culling)")]
 		public float m_FrustumCullingTolerance = 2.0f;
+
+		[Header("LOD (Level of Detail) Settings")]
+		[Tooltip("Enable LOD system based on LODGE paper for memory-efficient large-scale rendering")]
+		public bool m_LODEnabled = false;
+		[Tooltip("Enable LOD-based culling to reduce rendered splats at distance (LODGE Equation 2)")]
+		public bool m_LODCullingEnabled = true;
+		[Range(0, 10)]
+		[Tooltip("Maximum LOD level to render - higher levels (more distant) are culled. 0=only closest, 1=close+medium, etc.")]
+		public int m_MaxRenderLODLevel = 1;
+		[Tooltip("Enable dynamic LOD data loading - loads appropriate LOD level data files based on camera distance")]
+		public bool m_DynamicLODLoading = false;
+		[Range(0.1f, 5.0f)]
+		[Tooltip("Global LOD distance multiplier - higher values make LOD transitions happen further away")]
+		public float m_LODDistanceMultiplier = 1.0f;
+		[Range(0f, 5.0f)]
+		[Tooltip("LOD transition blend range - controls smoothness of transitions between LOD levels")]
+		public float m_LODTransitionRange = 2.0f;
+		[Tooltip("Use 3D smoothing filter to prevent aliasing artifacts at distance (LODGE paper Eq. 3)")]
+		public bool m_Use3DSmoothingFilter = true;
+		[Range(64, 2048)]
+		[Tooltip("Memory budget for LOD buffers in MB - system will unload distant LODs to stay within budget")]
+		public int m_LODMemoryBudgetMB = 512;
+		[Tooltip("Preload adjacent LOD levels for instant switching")]
+		public bool m_PreloadAdjacentLODs = true;
+		[Range(1, 60)]
+		[Tooltip("Frames to wait before considering LOD level switch (prevents thrashing)")]
+		public int m_LODSwitchDebounceFrames = 30;
 
 		public RenderMode m_RenderMode = RenderMode.Splats;
 		[Range(1.0f, 15.0f)] public float m_PointDisplaySize = 3.0f;
@@ -344,6 +366,18 @@ namespace GaussianSplatting.Runtime
 		internal GraphicsBuffer m_GpuIndirectArgs;       // arguments for indirect draw
 		uint m_VisibleSplatCount;               // cached visible count from GPU
 
+		// LOD system buffers
+		GraphicsBuffer m_GpuLODLevels;          // LOD level definitions
+		GraphicsBuffer m_GpuSplatLODData;       // per splat: LOD level assignment and opacity blend factor
+		int m_CurrentLODLevel = 0;              // current active LOD level based on camera distance
+		float m_CurrentCameraDistance = 0f;     // distance from camera to scene center
+
+		// Dynamic LOD loading
+		GaussianLODBufferManager m_LODBufferManager;
+		int m_TargetLODLevel = -1;              // desired LOD level based on camera distance
+		int m_LODDebounceCounter = 0;           // frames since LOD level change request
+		bool m_UsingDynamicLOD = false;         // currently using dynamically loaded LOD data
+
 		GpuSorting m_Sorter;
 		GpuSorting.Args m_SorterArgs;
 
@@ -365,25 +399,8 @@ namespace GaussianSplatting.Runtime
 		int m_InitialFrameCounter = 0;
 		internal int m_AdaptiveSortFrameCounter;
 
-		// Chunk sort cache
-		Vector3 m_LastSortCameraPosition;
-		Quaternion m_LastSortCameraRotation;
-		Matrix4x4 m_LastSortMatrix;
-		bool m_SortCacheValid;
-		float m_LastSortDistance;
-
 		// Distance-based optimization
 		float m_AverageChunkDistance;
-		int m_DistanceFrameSkipCounter;
-
-		// Parameter tracking for cache invalidation
-		float m_LastFrustumCullingTolerance;
-		float m_LastChunkCacheDistanceThreshold;
-		float m_LastDistantChunkThreshold;
-		bool m_LastFrustumCullingEnabled;
-		bool m_LastChunkSortCacheEnabled;
-		bool m_LastDistanceBasedSortEnabled;
-		bool m_ParametersInitialized;
 
 		// Smoothing for movement detection to reduce flickering
 		float m_SmoothedMovementSpeed;
@@ -451,6 +468,16 @@ namespace GaussianSplatting.Runtime
 			public static readonly int VisibleIndices = Shader.PropertyToID("_VisibleIndices");
 			public static readonly int StreamCompactTemp = Shader.PropertyToID("_StreamCompactTemp");
 			public static readonly int VisibleCount = Shader.PropertyToID("_VisibleCount");
+			public static readonly int LODEnabled = Shader.PropertyToID("_LODEnabled");
+			public static readonly int LODCullingEnabled = Shader.PropertyToID("_LODCullingEnabled");
+			public static readonly int MaxRenderLODLevel = Shader.PropertyToID("_MaxRenderLODLevel");
+			public static readonly int LODLevels = Shader.PropertyToID("_LODLevels");
+			public static readonly int LODLevelCount = Shader.PropertyToID("_LODLevelCount");
+			public static readonly int LODDistanceMultiplier = Shader.PropertyToID("_LODDistanceMultiplier");
+			public static readonly int LODTransitionRange = Shader.PropertyToID("_LODTransitionRange");
+			public static readonly int Use3DSmoothingFilter = Shader.PropertyToID("_Use3DSmoothingFilter");
+			public static readonly int SplatLODData = Shader.PropertyToID("_SplatLODData");
+			public static readonly int CameraDistance = Shader.PropertyToID("_CameraDistance");
 		}
 
 		[field: NonSerialized] public bool editModified { get; private set; }
@@ -471,6 +498,7 @@ namespace GaussianSplatting.Runtime
 			CullSplatsInPartialChunks = 4,
 			StreamCompactScan = 5,
 			StreamCompactWrite = 6,
+			UpdateLODSelection = 7,
 		}
 
 		public bool HasValidAsset =>
@@ -491,38 +519,66 @@ namespace GaussianSplatting.Runtime
 			if (!HasValidAsset)
 				return;
 
-			m_SplatCount = asset.splatCount;
-			m_GpuPosData = new GraphicsBuffer(GraphicsBuffer.Target.Raw | GraphicsBuffer.Target.CopySource, (int)(asset.posData.dataSize / 4), 4) { name = "GaussianPosData" };
-			m_GpuPosData.SetData(asset.posData.GetData<uint>());
-			m_GpuOtherData = new GraphicsBuffer(GraphicsBuffer.Target.Raw | GraphicsBuffer.Target.CopySource, (int)(asset.otherData.dataSize / 4), 4) { name = "GaussianOtherData" };
-			m_GpuOtherData.SetData(asset.otherData.GetData<uint>());
-			m_GpuSHData = new GraphicsBuffer(GraphicsBuffer.Target.Raw, (int)(asset.shData.dataSize / 4), 4) { name = "GaussianSHData" };
-			m_GpuSHData.SetData(asset.shData.GetData<uint>());
-			var (texWidth, texHeight) = GaussianSplatAsset.CalcTextureSize(asset.splatCount);
-			var texFormat = GaussianSplatAsset.ColorFormatToGraphics(asset.colorFormat);
-			var tex = new Texture2D(texWidth, texHeight, texFormat, TextureCreationFlags.DontInitializePixels | TextureCreationFlags.IgnoreMipmapLimit | TextureCreationFlags.DontUploadUponCreate) { name = "GaussianColorData" };
-			tex.SetPixelData(asset.colorData.GetData<byte>(), 0);
-			tex.Apply(false, true);
-			m_GpuColorData = tex;
-			if (asset.chunkData != null && asset.chunkData.dataSize != 0)
+			// Check if we should use dynamic LOD loading
+			bool useDynamicLOD = m_LODEnabled && m_DynamicLODLoading && asset.hasLODDataFiles && asset.lodLevelCount > 0;
+
+			if (useDynamicLOD)
 			{
-				m_GpuChunks = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
-					(int)(asset.chunkData.dataSize / UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>()),
-					UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>())
-				{ name = "GaussianChunkData" };
-				m_GpuChunks.SetData(asset.chunkData.GetData<GaussianSplatAsset.ChunkInfo>());
-				m_GpuChunksValid = true;
-			}
-			else
-			{
-				// just a dummy chunk buffer
-				m_GpuChunks = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1,
-					UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>())
-				{ name = "GaussianChunkData" };
-				m_GpuChunksValid = false;
+				// Initialize LOD buffer manager
+				m_LODBufferManager?.Dispose();
+				m_LODBufferManager = new GaussianLODBufferManager(asset);
+				m_LODBufferManager.memoryBudget = m_LODMemoryBudgetMB * 1024L * 1024L;
+
+				// Load initial LOD level (start with highest detail)
+				if (m_LODBufferManager.LoadLODLevel(0))
+				{
+					if (m_LODBufferManager.SwitchToLODLevel(0, out var bufferSet))
+					{
+						LoadBuffersFromLODSet(bufferSet);
+						m_UsingDynamicLOD = true;
+						m_CurrentLODLevel = 0;
+						m_TargetLODLevel = 0;
+						Debug.Log("[GaussianSplatRenderer] Using dynamic LOD loading");
+					}
+				}
 			}
 
-			m_GpuView = new GraphicsBuffer(GraphicsBuffer.Target.Structured, m_Asset.splatCount, kGpuViewDataSize);
+			if (!m_UsingDynamicLOD)
+			{
+				// Load base asset data (original behavior)
+				m_SplatCount = asset.splatCount;
+				m_GpuPosData = new GraphicsBuffer(GraphicsBuffer.Target.Raw | GraphicsBuffer.Target.CopySource, (int)(asset.posData.dataSize / 4), 4) { name = "GaussianPosData" };
+				m_GpuPosData.SetData(asset.posData.GetData<uint>());
+				m_GpuOtherData = new GraphicsBuffer(GraphicsBuffer.Target.Raw | GraphicsBuffer.Target.CopySource, (int)(asset.otherData.dataSize / 4), 4) { name = "GaussianOtherData" };
+				m_GpuOtherData.SetData(asset.otherData.GetData<uint>());
+				m_GpuSHData = new GraphicsBuffer(GraphicsBuffer.Target.Raw, (int)(asset.shData.dataSize / 4), 4) { name = "GaussianSHData" };
+				m_GpuSHData.SetData(asset.shData.GetData<uint>());
+				var (texWidth, texHeight) = GaussianSplatAsset.CalcTextureSize(asset.splatCount);
+				var texFormat = GaussianSplatAsset.ColorFormatToGraphics(asset.colorFormat);
+				var tex = new Texture2D(texWidth, texHeight, texFormat, TextureCreationFlags.DontInitializePixels | TextureCreationFlags.IgnoreMipmapLimit | TextureCreationFlags.DontUploadUponCreate) { name = "GaussianColorData" };
+				tex.SetPixelData(asset.colorData.GetData<byte>(), 0);
+				tex.Apply(false, true);
+				m_GpuColorData = tex;
+				if (asset.chunkData != null && asset.chunkData.dataSize != 0)
+				{
+					m_GpuChunks = new GraphicsBuffer(GraphicsBuffer.Target.Structured,
+						(int)(asset.chunkData.dataSize / UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>()),
+						UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>())
+					{ name = "GaussianChunkData" };
+					m_GpuChunks.SetData(asset.chunkData.GetData<GaussianSplatAsset.ChunkInfo>());
+					m_GpuChunksValid = true;
+				}
+				else
+				{
+					// just a dummy chunk buffer
+					m_GpuChunks = new GraphicsBuffer(GraphicsBuffer.Target.Structured, 1,
+						UnsafeUtility.SizeOf<GaussianSplatAsset.ChunkInfo>())
+					{ name = "GaussianChunkData" };
+					m_GpuChunksValid = false;
+				}
+			}
+
+			m_GpuView = new GraphicsBuffer(GraphicsBuffer.Target.Structured, m_SplatCount, kGpuViewDataSize);
 			m_GpuIndexBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Index, 36, 2);
 			// cube indices, most often we use only the first quad
 			m_GpuIndexBuffer.SetData(new ushort[]
@@ -537,6 +593,36 @@ namespace GaussianSplatting.Runtime
 
 			InitSortBuffers(splatCount);
 			InitFrustumCullingBuffers(splatCount);
+			InitLODBuffers(splatCount);
+		}
+
+		void LoadBuffersFromLODSet(GaussianLODBufferManager.LODBufferSet bufferSet)
+		{
+			// Dispose old buffers if they exist
+			DisposeBuffer(ref m_GpuPosData);
+			DisposeBuffer(ref m_GpuOtherData);
+			DisposeBuffer(ref m_GpuSHData);
+			DisposeBuffer(ref m_GpuChunks);
+			if (m_GpuColorData != null)
+				DestroyImmediate(m_GpuColorData);
+
+			// Assign new buffers from LOD set
+			m_SplatCount = bufferSet.splatCount;
+			m_GpuPosData = bufferSet.posData;
+			m_GpuOtherData = bufferSet.otherData;
+			m_GpuSHData = bufferSet.shData;
+			m_GpuColorData = bufferSet.colorData;
+			m_GpuChunks = bufferSet.chunks;
+			m_GpuChunksValid = bufferSet.chunksValid;
+
+			// Re-initialize dependent buffers with new splat count
+			DisposeBuffer(ref m_GpuView);
+			m_GpuView = new GraphicsBuffer(GraphicsBuffer.Target.Structured, m_SplatCount, kGpuViewDataSize);
+
+			// Re-initialize sort, culling, and LOD buffers
+			InitSortBuffers(m_SplatCount);
+			InitFrustumCullingBuffers(m_SplatCount);
+			InitLODBuffers(m_SplatCount);
 		}
 
 		ComputeShader m_CSSplatUtilities => m_CSSplatUtilitiesFFX;
@@ -603,6 +689,75 @@ namespace GaussianSplatting.Runtime
 			m_VisibleSplatCount = (uint)splatCount;
 		}
 
+		void InitLODBuffers(int splatCount)
+		{
+			// Dispose existing LOD buffers
+			DisposeBuffer(ref m_GpuLODLevels);
+			DisposeBuffer(ref m_GpuSplatLODData);
+
+			// Always create buffers (even if LOD is disabled) to avoid shader binding errors
+			// When LOD is disabled, we create dummy buffers with default values
+
+			int lodLevelCount = 1; // Default: at least 1 LOD level
+			bool hasValidLOD = HasValidAsset && m_Asset.useLOD && m_Asset.lodLevelCount > 0;
+
+			if (hasValidLOD)
+			{
+				// Initialize LOD levels from asset if not already done
+				if (m_Asset.lodLevels == null || m_Asset.lodLevels.Length == 0)
+				{
+					m_Asset.InitializeDefaultLODLevels();
+				}
+				lodLevelCount = m_Asset.lodLevelCount;
+			}
+
+			// Create GPU buffer for LOD level definitions (struct size: 16 bytes)
+			m_GpuLODLevels = new GraphicsBuffer(GraphicsBuffer.Target.Structured, lodLevelCount, 16)
+			{
+				name = "GaussianLODLevels"
+			};
+
+			// Convert LODLevel structs to GPU-friendly format
+			// GPU struct layout: float distanceThreshold, int startSplatIndex, int splatCount, float smoothingFactor
+			var lodLevelData = new float[lodLevelCount * 4];
+
+			if (hasValidLOD)
+			{
+				for (int i = 0; i < lodLevelCount; i++)
+				{
+					var level = m_Asset.lodLevels[i];
+					lodLevelData[i * 4 + 0] = level.distanceThreshold;
+					lodLevelData[i * 4 + 1] = level.startSplatIndex;
+					lodLevelData[i * 4 + 2] = level.splatCount;
+					lodLevelData[i * 4 + 3] = level.smoothingFactor;
+				}
+			}
+			else
+			{
+				// Dummy LOD level: infinite distance, no smoothing
+				lodLevelData[0] = float.MaxValue;  // distanceThreshold
+				lodLevelData[1] = 0;               // startSplatIndex
+				lodLevelData[2] = splatCount;      // splatCount
+				lodLevelData[3] = 0;               // smoothingFactor
+			}
+			m_GpuLODLevels.SetData(lodLevelData);
+
+			// Create per-splat LOD data buffer (2 floats per splat: LOD level, opacity blend factor)
+			m_GpuSplatLODData = new GraphicsBuffer(GraphicsBuffer.Target.Structured, splatCount, 8)
+			{
+				name = "GaussianSplatLODData"
+			};
+
+			// Initialize all splats to LOD 0 with full opacity
+			var splatLODData = new float[splatCount * 2];
+			for (int i = 0; i < splatCount; i++)
+			{
+				splatLODData[i * 2 + 0] = 0; // LOD level 0
+				splatLODData[i * 2 + 1] = 1.0f; // Full opacity
+			}
+			m_GpuSplatLODData.SetData(splatLODData);
+		}
+
 		bool resourcesAreSetUp => m_ShaderSplats != null && m_ShaderComposite != null && m_ShaderDebugPoints != null &&
 								  m_ShaderDebugBoxes != null && m_CSSplatUtilities != null && SystemInfo.supportsComputeShaders;
 
@@ -635,15 +790,6 @@ namespace GaussianSplatting.Runtime
 		{
 			m_FrameCounter = 0;
 
-			// Reset movement tracking variables to ensure proper initialization
-			m_SmoothedMovementSpeed = 0f;
-			m_SmoothedRotationSpeed = 0f;
-			m_ConsecutiveMovementFrames = 0;
-			m_CameraPositionInitialized = false;
-			m_ForceInitialSort = true;
-			m_InitialFrameCounter = 0;
-			m_ParametersInitialized = false;
-
 			if (!resourcesAreSetUp)
 				return;
 
@@ -656,20 +802,7 @@ namespace GaussianSplatting.Runtime
 #if UNITY_EDITOR
 		void OnValidate()
 		{
-			// Invalidate cache when parameters change in editor
-			// Only do this during play mode when everything is properly initialized
-			if (Application.isPlaying && m_ParametersInitialized && HasValidAsset)
-			{
-				CheckParameterChanges();
-			}
-
-			// Warning: Chunk sort cache is incompatible with frustum culling
-			if (m_ChunkSortCacheEnabled && m_FrustumCullingEnabled)
-			{
-				Debug.LogWarning($"[{name}] Chunk Sort Cache is incompatible with Frustum Culling. " +
-				                 "The cache will be automatically disabled when frustum culling is active. " +
-				                 "Consider disabling Chunk Sort Cache to avoid confusion.", this);
-			}
+			// Validation can be added here if needed
 		}
 #endif
 
@@ -745,24 +878,6 @@ namespace GaussianSplatting.Runtime
 
 			GUILayout.Space(10);
 
-			// Cache Settings
-			GUILayout.Label("Cache System", GUI.skin.box);
-			m_ChunkSortCacheEnabled = GUILayout.Toggle(m_ChunkSortCacheEnabled, "Chunk Sort Cache");
-
-			if (m_ChunkSortCacheEnabled)
-			{
-				// Warning if both cache and culling are enabled
-				if (m_FrustumCullingEnabled)
-				{
-					GUILayout.Label("WARNING: Cache disabled (incompatible with frustum culling)", GUI.skin.box);
-				}
-
-				m_ChunkCacheDistanceThreshold = GUILayout.HorizontalSlider(m_ChunkCacheDistanceThreshold, 0.1f, 2.0f);
-				GUILayout.Label($"Cache Distance Threshold: {m_ChunkCacheDistanceThreshold:F2}");
-			}
-
-			GUILayout.Space(10);
-
 			// Distance-based Optimization
 			GUILayout.Label("Distance Optimization", GUI.skin.box);
 			m_DistanceBasedSortEnabled = GUILayout.Toggle(m_DistanceBasedSortEnabled, "Distance-based Sort");
@@ -796,14 +911,12 @@ namespace GaussianSplatting.Runtime
 			GUILayout.Label($"Consecutive Movement Frames: {m_ConsecutiveMovementFrames}");
 			GUILayout.Label($"Smoothed Movement Speed: {m_SmoothedMovementSpeed:F4}");
 			GUILayout.Label($"Smoothed Rotation Speed: {m_SmoothedRotationSpeed:F2}°");
-			GUILayout.Label($"Cache Valid: {m_SortCacheValid}");
 
 			GUILayout.Space(10);
 
 			// Actions
 			if (GUILayout.Button("Force Sort"))
 			{
-				InvalidateSortCache();
 				m_ForceInitialSort = true;
 			}
 
@@ -835,15 +948,11 @@ namespace GaussianSplatting.Runtime
 			m_CameraMovementThreshold = 0.1f;
 			m_CameraRotationThreshold = 1.0f;
 			m_FastSortFrequency = 1;
-			m_ChunkSortCacheEnabled = true;
-			m_ChunkCacheDistanceThreshold = 0.5f;
 			m_DistanceBasedSortEnabled = true;
 			m_DistantChunkThreshold = 20.0f;
 			m_FrustumCullingEnabled = true;
 			m_FrustumCullingTolerance = 2.0f;
 
-			// Force cache invalidation to apply changes
-			InvalidateSortCache();
 			m_ForceInitialSort = true;
 		}
 
@@ -909,6 +1018,20 @@ namespace GaussianSplatting.Runtime
 			cmb.SetComputeIntParam(cs, Props.SplatFormat, (int)format);
 			cmb.SetComputeIntParam(cs, Props.SplatCount, m_SplatCount);
 			cmb.SetComputeIntParam(cs, Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
+
+			// Always set LOD parameters (buffers always exist, even if LOD is disabled)
+			bool lodEnabled = m_LODEnabled && m_Asset != null && m_Asset.useLOD && m_Asset.lodLevelCount > 0;
+			cmb.SetComputeIntParam(cs, Props.LODEnabled, lodEnabled ? 1 : 0);
+
+			if (m_GpuLODLevels != null && m_GpuSplatLODData != null)
+			{
+				cmb.SetComputeBufferParam(cs, kernelIndex, Props.LODLevels, m_GpuLODLevels);
+				cmb.SetComputeBufferParam(cs, kernelIndex, Props.SplatLODData, m_GpuSplatLODData);
+				cmb.SetComputeIntParam(cs, Props.LODLevelCount, lodEnabled ? m_Asset.lodLevelCount : 1);
+				cmb.SetComputeFloatParam(cs, Props.LODDistanceMultiplier, m_LODDistanceMultiplier);
+				cmb.SetComputeFloatParam(cs, Props.LODTransitionRange, m_LODTransitionRange);
+				cmb.SetComputeIntParam(cs, Props.Use3DSmoothingFilter, m_Use3DSmoothingFilter ? 1 : 0);
+			}
 		}
 
 		internal void SetAssetDataOnMaterial(MaterialPropertyBlock mat)
@@ -963,6 +1086,18 @@ namespace GaussianSplatting.Runtime
 			DisposeBuffer(ref m_GpuStreamCompactTemp);
 			DisposeBuffer(ref m_GpuVisibleCount);
 			DisposeBuffer(ref m_GpuIndirectArgs);
+
+			// Dispose LOD buffers
+			DisposeBuffer(ref m_GpuLODLevels);
+			DisposeBuffer(ref m_GpuSplatLODData);
+
+			// Dispose dynamic LOD manager
+			if (m_LODBufferManager != null)
+			{
+				m_LODBufferManager.Dispose();
+				m_LODBufferManager = null;
+			}
+			m_UsingDynamicLOD = false;
 
 			m_SorterArgs.resources?.Dispose();
 
@@ -1031,13 +1166,6 @@ namespace GaussianSplatting.Runtime
 
 		internal bool ShouldSort(Camera cam)
 		{
-			// Check for parameter changes that require cache invalidation
-			// Only do this if we have a valid asset to avoid initialization issues
-			if (HasValidAsset)
-			{
-				CheckParameterChanges();
-			}
-
 			// Force initial sort to ensure proper rendering on startup
 			// Sort multiple times during the first few frames to ensure correct initialization
 			m_InitialFrameCounter++;
@@ -1049,7 +1177,6 @@ namespace GaussianSplatting.Runtime
 					m_LastCameraPosition = cam.transform.position;
 					m_LastCameraRotation = cam.transform.rotation;
 					m_CameraPositionInitialized = true;
-					InvalidateSortCache(); // Invalidate cache on init
 				}
 				return true; // Force sort during first few frames
 			}
@@ -1066,7 +1193,6 @@ namespace GaussianSplatting.Runtime
 				m_LastCameraPosition = cam.transform.position;
 				m_LastCameraRotation = cam.transform.rotation;
 				m_CameraPositionInitialized = true;
-				InvalidateSortCache(); // Invalidate cache on init
 				return true; // Sort on first frame
 			}
 
@@ -1100,30 +1226,6 @@ namespace GaussianSplatting.Runtime
 
 			bool cameraMoving = m_ConsecutiveMovementFrames >= 2; // Require at least 2 frames of movement
 
-			// Check sort cache validity if enabled
-			// NOTE: Sort cache is incompatible with frustum culling because visible indices change every frame
-			// even when camera movement is minimal, causing sort key/distance mismatch
-			if (m_ChunkSortCacheEnabled && m_SortCacheValid && !m_FrustumCullingEnabled)
-			{
-				float sortDistanceDelta = Vector3.Distance(currentPosition, m_LastSortCameraPosition);
-				float sortRotationDelta = Quaternion.Angle(currentRotation, m_LastSortCameraRotation);
-
-				// During rapid movement, disable cache to ensure frequent sorting
-				// Cache is valid only if both position AND rotation haven't changed significantly AND not moving rapidly
-				if (sortDistanceDelta < m_ChunkCacheDistanceThreshold &&
-					sortRotationDelta < 2.0f && // 2 degrees rotation threshold for cache
-					m_ConsecutiveMovementFrames < 5) // Disable cache during sustained rapid movement
-				{
-					// Cache is still valid, skip sorting
-					return false;
-				}
-				else if (cameraMoving)
-				{
-					// Force cache invalidation during movement to prevent flickering
-					InvalidateSortCache();
-				}
-			}
-
 			// Distance-based frequency optimization
 			if (m_DistanceBasedSortEnabled && m_AverageChunkDistance > m_DistantChunkThreshold)
 			{
@@ -1148,77 +1250,6 @@ namespace GaussianSplatting.Runtime
 			{
 				// When static, use the base frequency
 				return m_AdaptiveSortFrameCounter % m_SortNthFrame == 0;
-			}
-		}
-
-		void InvalidateSortCache()
-		{
-			m_SortCacheValid = false;
-		}
-
-		void CheckParameterChanges()
-		{
-			// Initialize parameters tracking on first call
-			if (!m_ParametersInitialized)
-			{
-				m_LastFrustumCullingTolerance = m_FrustumCullingTolerance;
-				m_LastChunkCacheDistanceThreshold = m_ChunkCacheDistanceThreshold;
-				m_LastDistantChunkThreshold = m_DistantChunkThreshold;
-				m_LastFrustumCullingEnabled = m_FrustumCullingEnabled;
-				m_LastChunkSortCacheEnabled = m_ChunkSortCacheEnabled;
-				m_LastDistanceBasedSortEnabled = m_DistanceBasedSortEnabled;
-				m_ParametersInitialized = true;
-				return;
-			}
-
-			// Check if any critical parameters have changed
-			bool parametersChanged =
-				!Mathf.Approximately(m_LastFrustumCullingTolerance, m_FrustumCullingTolerance) ||
-				!Mathf.Approximately(m_LastChunkCacheDistanceThreshold, m_ChunkCacheDistanceThreshold) ||
-				!Mathf.Approximately(m_LastDistantChunkThreshold, m_DistantChunkThreshold) ||
-				m_LastFrustumCullingEnabled != m_FrustumCullingEnabled ||
-				m_LastChunkSortCacheEnabled != m_ChunkSortCacheEnabled ||
-				m_LastDistanceBasedSortEnabled != m_DistanceBasedSortEnabled;
-
-			if (parametersChanged)
-			{
-				// Invalidate cache when rendering parameters change
-				InvalidateSortCache();
-
-				// Update stored values
-				m_LastFrustumCullingTolerance = m_FrustumCullingTolerance;
-				m_LastChunkCacheDistanceThreshold = m_ChunkCacheDistanceThreshold;
-				m_LastDistantChunkThreshold = m_DistantChunkThreshold;
-				m_LastFrustumCullingEnabled = m_FrustumCullingEnabled;
-				m_LastChunkSortCacheEnabled = m_ChunkSortCacheEnabled;
-				m_LastDistanceBasedSortEnabled = m_DistanceBasedSortEnabled;
-			}
-		}
-
-		void UpdateSortCache(Camera cam, Matrix4x4 matrix)
-		{
-			m_LastSortCameraPosition = cam.transform.position;
-			m_LastSortCameraRotation = cam.transform.rotation;
-			m_LastSortMatrix = matrix;
-			m_SortCacheValid = true;
-
-			// Update average chunk distance for distance-based optimization
-			if (m_DistanceBasedSortEnabled)
-			{
-				UpdateAverageChunkDistance(cam);
-			}
-		}
-
-		void UpdateAverageChunkDistance(Camera cam)
-		{
-			// Calculate average distance to chunks (simplified estimation)
-			if (HasValidAsset && m_SplatCount > 0)
-			{
-				// Estimate center of splat cloud
-				Vector3 cameraPos = cam.transform.position;
-				Vector3 splatCenter = transform.position; // Object center as approximation
-
-				m_AverageChunkDistance = Vector3.Distance(cameraPos, splatCenter);
 			}
 		}
 
@@ -1257,6 +1288,12 @@ namespace GaussianSplatting.Runtime
 			if (!HasValidRenderSetup)
 				return;
 
+			// Update LOD selection before sorting if enabled
+			if (m_LODEnabled && m_Asset != null && m_Asset.useLOD)
+			{
+				UpdateLODSelection(cmd, cam, matrix);
+			}
+
 			Matrix4x4 worldToCamMatrix = cam.worldToCameraMatrix;
 			worldToCamMatrix.m20 *= -1;
 			worldToCamMatrix.m21 *= -1;
@@ -1272,10 +1309,38 @@ namespace GaussianSplatting.Runtime
 			CalcDistancesForVisibleSplats(cmd, cam, matrix, worldToCamMatrix);
 			m_Sorter.Dispatch(cmd, m_SorterArgs);
 
-			// Update sort cache when sorting is performed
-			UpdateSortCache(cam, matrix);
-
 			cmd.EndSample(s_ProfSort);
+		}
+
+		void UpdateLODSelection(CommandBuffer cmd, Camera cam, Matrix4x4 matrix)
+		{
+			// Safety check: ensure required buffers exist
+			if (m_GpuLODLevels == null || m_GpuSplatLODData == null)
+				return;
+
+			// Set LOD parameters
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.LODEnabled, m_LODEnabled ? 1 : 0);
+			cmd.SetComputeBufferParam(m_CSSplatUtilities, (int)KernelIndices.UpdateLODSelection, Props.LODLevels, m_GpuLODLevels);
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.LODLevelCount, m_Asset.lodLevelCount);
+			cmd.SetComputeFloatParam(m_CSSplatUtilities, Props.LODDistanceMultiplier, m_LODDistanceMultiplier);
+			cmd.SetComputeFloatParam(m_CSSplatUtilities, Props.LODTransitionRange, m_LODTransitionRange);
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.Use3DSmoothingFilter, m_Use3DSmoothingFilter ? 1 : 0);
+
+			// Set world/camera transformation matrices
+			cmd.SetComputeMatrixParam(m_CSSplatUtilities, Props.MatrixObjectToWorld, matrix);
+			cmd.SetComputeVectorParam(m_CSSplatUtilities, Props.VecWorldSpaceCameraPos, cam.transform.position);
+
+			// Bind buffers
+			cmd.SetComputeBufferParam(m_CSSplatUtilities, (int)KernelIndices.UpdateLODSelection, Props.SplatPos, m_GpuPosData);
+			cmd.SetComputeBufferParam(m_CSSplatUtilities, (int)KernelIndices.UpdateLODSelection, Props.SplatChunks, m_GpuChunks);
+			cmd.SetComputeBufferParam(m_CSSplatUtilities, (int)KernelIndices.UpdateLODSelection, Props.SplatLODData, m_GpuSplatLODData);
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.SplatFormat, (int)m_Asset.posFormat);
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.SplatCount, m_SplatCount);
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.SplatChunkCount, m_GpuChunksValid ? m_GpuChunks.count : 0);
+
+			// Dispatch
+			m_CSSplatUtilities.GetKernelThreadGroupSizes((int)KernelIndices.UpdateLODSelection, out uint gsX, out _, out _);
+			cmd.DispatchCompute(m_CSSplatUtilities, (int)KernelIndices.UpdateLODSelection, (m_SplatCount + (int)gsX - 1) / (int)gsX, 1, 1);
 		}
 
 		void PerformFrustumCulling(CommandBuffer cmd, Camera cam, Matrix4x4 matrix)
@@ -1299,6 +1364,17 @@ namespace GaussianSplatting.Runtime
 			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.FrustumCullingEnabled, 1);
 			cmd.SetComputeMatrixParam(m_CSSplatUtilities, Props.MatrixVP, vpMatrix);
 			cmd.SetComputeFloatParam(m_CSSplatUtilities, Props.FrustumCullingTolerance, m_FrustumCullingTolerance);
+
+			// Set LOD culling parameters (for combined frustum + LOD culling)
+			bool lodEnabled = m_LODEnabled && m_Asset != null && m_Asset.useLOD && m_Asset.lodLevelCount > 0;
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.LODEnabled, lodEnabled ? 1 : 0);
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.LODCullingEnabled, m_LODCullingEnabled ? 1 : 0);
+			cmd.SetComputeIntParam(m_CSSplatUtilities, Props.MaxRenderLODLevel, m_MaxRenderLODLevel);
+			if (lodEnabled && m_GpuSplatLODData != null)
+			{
+				cmd.SetComputeBufferParam(m_CSSplatUtilities, (int)KernelIndices.CullChunks, Props.SplatLODData, m_GpuSplatLODData);
+				cmd.SetComputeIntParam(m_CSSplatUtilities, Props.LODLevelCount, m_Asset.lodLevelCount);
+			}
 
 			// Bind visibility buffer
 			cmd.SetComputeBufferParam(m_CSSplatUtilities, (int)KernelIndices.CullChunks, Props.SplatVisibility,
@@ -1409,8 +1485,8 @@ namespace GaussianSplatting.Runtime
 							uint culledCount = (uint)m_SplatCount - m_LastVisibleSplatCount;
 							float culledPercentage = (culledCount * 100f) / m_SplatCount;
 							Debug.Log($"[{name}] Frustum Culling Stats - Frame {Time.frameCount}: " +
-							          $"Visible={m_LastVisibleSplatCount:N0}/{m_SplatCount:N0} ({visiblePercentage:F1}%), " +
-							          $"Culled={culledCount:N0} ({culledPercentage:F1}%)");
+									  $"Visible={m_LastVisibleSplatCount:N0}/{m_SplatCount:N0} ({visiblePercentage:F1}%), " +
+									  $"Culled={culledCount:N0} ({culledPercentage:F1}%)");
 						}
 					});
 				}
@@ -1446,13 +1522,98 @@ namespace GaussianSplatting.Runtime
 				{
 					DisposeResourcesForAsset();
 					CreateResourcesForAsset();
-					InvalidateSortCache(); // Invalidate cache when asset changes
 					m_ForceInitialSort = true; // Force sort after asset change
 				}
 				else
 				{
 					Debug.LogError($"{nameof(GaussianSplatRenderer)} component is not set up correctly (Resource references are missing), or platform does not support compute shaders");
 				}
+			}
+
+			// Update dynamic LOD system
+			if (m_UsingDynamicLOD && m_LODBufferManager != null)
+			{
+				UpdateDynamicLOD();
+			}
+		}
+
+		void UpdateDynamicLOD()
+		{
+			Camera mainCam = Camera.main;
+			if (mainCam == null)
+				return;
+
+			// Calculate distance from camera to scene center
+			var bounds = new Bounds();
+			bounds.SetMinMax(m_Asset.boundsMin, m_Asset.boundsMax);
+			Vector3 sceneCenter = transform.TransformPoint(bounds.center);
+			float distance = Vector3.Distance(mainCam.transform.position, sceneCenter) * m_LODDistanceMultiplier;
+			m_CurrentCameraDistance = distance;
+
+			// Determine appropriate LOD level based on distance
+			int targetLevel = DetermineLODLevel(distance);
+
+			// Check if we need to switch LOD levels
+			if (targetLevel != m_CurrentLODLevel)
+			{
+				// Start debounce if this is a new target
+				if (targetLevel != m_TargetLODLevel)
+				{
+					m_TargetLODLevel = targetLevel;
+					m_LODDebounceCounter = 0;
+				}
+				else
+				{
+					// Continue debounce counter
+					m_LODDebounceCounter++;
+
+					// Switch after debounce period
+					if (m_LODDebounceCounter >= m_LODSwitchDebounceFrames)
+					{
+						SwitchToLODLevel(targetLevel);
+						m_LODDebounceCounter = 0;
+					}
+				}
+			}
+			else
+			{
+				// Reset debounce if we're stable at current level
+				m_TargetLODLevel = m_CurrentLODLevel;
+				m_LODDebounceCounter = 0;
+			}
+
+			// Preload adjacent LODs if enabled
+			if (m_PreloadAdjacentLODs && m_FrameCounter % 60 == 0) // Check every second
+			{
+				m_LODBufferManager.PreloadAdjacentLODs();
+			}
+		}
+
+		int DetermineLODLevel(float distance)
+		{
+			if (!m_Asset.useLOD || m_Asset.lodLevelCount == 0)
+				return 0;
+
+			// Find appropriate LOD level based on distance thresholds
+			for (int i = 0; i < m_Asset.lodLevelCount; i++)
+			{
+				if (distance < m_Asset.lodLevels[i].distanceThreshold)
+					return i;
+			}
+
+			// Use last (lowest detail) LOD if beyond all thresholds
+			return m_Asset.lodLevelCount - 1;
+		}
+
+		void SwitchToLODLevel(int targetLevel)
+		{
+			if (m_LODBufferManager.SwitchToLODLevel(targetLevel, out var bufferSet))
+			{
+				LoadBuffersFromLODSet(bufferSet);
+				m_CurrentLODLevel = targetLevel;
+				m_ForceInitialSort = true; // Force re-sort with new data
+
+				Debug.Log($"[GaussianSplatRenderer] Switched to LOD {targetLevel}: {bufferSet.splatCount:N0} splats at distance {m_CurrentCameraDistance:F1}m");
 			}
 		}
 

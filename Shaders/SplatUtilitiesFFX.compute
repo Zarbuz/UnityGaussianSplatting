@@ -11,6 +11,9 @@
 #pragma kernel CSStreamCompactScan
 #pragma kernel CSStreamCompactWrite
 
+// LOD (Level of Detail) kernels based on LODGE paper
+#pragma kernel CSUpdateLODSelection
+
 #include "GpuSortFidelityFX.hlsl"
 
 // FidelityFX GPU sorting
@@ -104,6 +107,26 @@ RWStructuredBuffer<uint> _VisibleIndices; // compacted visible splat indices
 RWStructuredBuffer<uint> _StreamCompactTemp; // temp buffer for scan operations
 RWStructuredBuffer<uint> _VisibleCount; // [0] = number of visible splats
 
+// LOD system variables (LODGE paper)
+struct LODLevel
+{
+    float distanceThreshold;    // d_l in paper - distance threshold for this LOD
+    float startSplatIndex;      // start index (currently unused, all splats in all LODs)
+    float splatCount;           // number of splats (currently unused)
+    float smoothingFactor;      // s_d/f in paper - 3D smoothing filter factor
+};
+
+uint _LODEnabled;
+StructuredBuffer<LODLevel> _LODLevels;
+uint _LODLevelCount;
+float _LODDistanceMultiplier;
+float _LODTransitionRange;
+uint _Use3DSmoothingFilter;
+RWStructuredBuffer<float2> _SplatLODData; // per splat: (LOD level, opacity blend factor)
+float _CameraDistance; // distance from camera to scene center
+uint _LODCullingEnabled; // enable LOD-based culling to reduce rendered splats
+uint _MaxRenderLODLevel; // maximum LOD level to render (0=only closest, 1=close+medium, etc.)
+
 #define CHUNK_HIDDEN 0
 #define CHUNK_VISIBLE 1
 #define CHUNK_PARTIAL 2
@@ -184,6 +207,15 @@ void CSCalcViewData(uint3 id : SV_DispatchThreadID)
     half opacityScale = _SplatOpacityScale;
     float splatScale = _SplatScale;
 
+    // Load LOD data for this splat (LOD level, opacity blend factor)
+    float2 lodData = float2(0, 1.0);
+    if (_LODEnabled && _LODLevelCount > 0)
+    {
+        lodData = _SplatLODData[idx];
+    }
+    int splatLODLevel = (int)lodData.x;
+    float lodOpacityBlend = lodData.y;
+
     // deleted?
     if (_SplatBitsValid)
     {
@@ -210,6 +242,22 @@ void CSCalcViewData(uint3 id : SV_DispatchThreadID)
         float splatScale2 = splatScale * splatScale;
         cov3d0 *= splatScale2;
         cov3d1 *= splatScale2;
+
+        // Apply 3D smoothing filter based on LOD level (LODGE Equation 3)
+        // G̃(x) = √(|Σ|/|Σ + (sd/f)·I|) × exp(-½(x-μ)ᵀ(Σ + (sd/f)·I)⁻¹(x-μ))
+        // This adds (sd/f)·I to the covariance matrix to prevent aliasing at distance
+        if (_LODEnabled && _Use3DSmoothingFilter && splatLODLevel > 0 && splatLODLevel < _LODLevelCount)
+        {
+            LODLevel currentLOD = _LODLevels[splatLODLevel];
+            float smoothingFactor = currentLOD.smoothingFactor;
+
+            // Add smoothing term to covariance (approximation: add to diagonal)
+            // In practice, this increases the Gaussian's size to prevent aliasing
+            float smoothing2 = smoothingFactor * smoothingFactor;
+            cov3d0 += float3(smoothing2, 0, smoothing2); // Add to xx and zz components
+            cov3d1 += float3(0, smoothing2, 0);          // Add to yy component
+        }
+
         float3 cov2d = CalcCovariance2D(splat.pos, cov3d0, cov3d1, _MatrixMV, UNITY_MATRIX_P, _VecScreenParams);
 
         DecomposeCovariance(cov2d, view.axis1, view.axis2);
@@ -220,7 +268,11 @@ void CSCalcViewData(uint3 id : SV_DispatchThreadID)
 
         half4 col;
         col.rgb = ShadeSH(splat.sh, objViewDir, _SHOrder, _SHOnly != 0);
-        col.a = min(splat.opacity * opacityScale, 65000);
+
+        // Apply LOD opacity blending (LODGE Equation 4)
+        // This creates smooth transitions between LOD levels
+        col.a = min(splat.opacity * opacityScale * lodOpacityBlend, 65000);
+
         view.color.x = (f32tof16(col.r) << 16) | f32tof16(col.g);
         view.color.y = (f32tof16(col.b) << 16) | f32tof16(col.a);
     }
@@ -349,7 +401,7 @@ uint TestSplatVisibility(uint splatIdx, float3 splatPosLocal)
     return 1;
 }
 
-// Kernel 1: Test all splats against frustum
+// Kernel 1: Test all splats against frustum and LOD culling
 [numthreads(GROUP_SIZE,1,1)]
 void CSCullChunks(uint3 id : SV_DispatchThreadID)
 {
@@ -357,16 +409,41 @@ void CSCullChunks(uint3 id : SV_DispatchThreadID)
     if (splatIdx >= _SplatCount)
         return;
 
-    // If culling disabled, mark all as visible
-    if (!_FrustumCullingEnabled)
+    uint isVisible = 1;
+
+    // Frustum culling
+    if (_FrustumCullingEnabled)
     {
-        _SplatVisibility[splatIdx] = 1;
-        return;
+        float3 posLocal = LoadSplatPos(splatIdx);
+        isVisible = TestSplatVisibility(splatIdx, posLocal);
     }
 
-    // Load splat position (in local object space) and test visibility
-    float3 posLocal = LoadSplatPos(splatIdx);
-    _SplatVisibility[splatIdx] = TestSplatVisibility(splatIdx, posLocal);
+    // LOD culling (LODGE Equation 2) - only render splats at appropriate LOD level
+    // This dramatically reduces rendered splats at distance
+    if (_LODEnabled && _LODCullingEnabled && _LODLevelCount > 0 && isVisible == 1)
+    {
+        // Read LOD level assigned to this splat (computed in CSUpdateLODSelection)
+        float2 lodData = _SplatLODData[splatIdx];
+        int splatLODLevel = (int)lodData.x;
+        float lodOpacity = lodData.y;
+
+        // Cull splats with very low opacity (in transition zones)
+        // This implements LODGE's distance-based selection
+        if (lodOpacity < 0.01)
+        {
+            isVisible = 0;
+        }
+
+        // Additional culling: only render splats up to MaxRenderLODLevel
+        // This prevents rendering distant low-detail splats when we have high detail nearby
+        // MaxRenderLODLevel: 0 = only closest, 1 = close+medium, 2 = close+medium+far, etc.
+        if (splatLODLevel > _MaxRenderLODLevel)
+        {
+            isVisible = 0;
+        }
+    }
+
+    _SplatVisibility[splatIdx] = isVisible;
 }
 
 // Kernel 2: Direct stream compaction using atomic operations
@@ -419,5 +496,80 @@ void CSStreamCompactWrite(uint3 id : SV_DispatchThreadID)
         // Use deterministic pattern to ensure stable sorting behavior
         _SplatSortKeys[idx] = 0xFFFFFFF0 + (idx % 16);
     }
+}
+
+
+// ========== LOD (LEVEL OF DETAIL) KERNELS ==========
+// Based on LODGE paper: https://arxiv.org/html/2505.23158v1
+
+// Kernel: Update LOD selection based on camera distance (LODGE Equation 2)
+// For each splat, determine which LOD level it belongs to and compute opacity blend factor
+[numthreads(GROUP_SIZE,1,1)]
+void CSUpdateLODSelection(uint3 id : SV_DispatchThreadID)
+{
+    uint splatIdx = id.x;
+    if (splatIdx >= _SplatCount)
+        return;
+
+    // If LOD is disabled, set all splats to LOD 0 with full opacity
+    if (!_LODEnabled || _LODLevelCount == 0)
+    {
+        _SplatLODData[splatIdx] = float2(0, 1.0);
+        return;
+    }
+
+    // Load splat position in local object space
+    float3 splatPosLocal = LoadSplatPos(splatIdx);
+
+    // Transform to world space
+    float3 splatPosWorld = mul(_MatrixObjectToWorld, float4(splatPosLocal, 1)).xyz;
+
+    // Calculate distance from camera to this splat
+    float splatDistance = length(_VecWorldSpaceCameraPos.xyz - splatPosWorld);
+
+    // Apply global distance multiplier
+    splatDistance *= _LODDistanceMultiplier;
+
+    // Select LOD level based on distance thresholds (LODGE Equation 2)
+    // Ĝ(c) = ⋃[l=0 to L-1] {gi ∈ G(l) : dl ≤ ||μi(l) - c||₂ < dl+1}
+    int selectedLOD = 0;
+    float opacityBlend = 1.0;
+
+    for (uint l = 0; l < _LODLevelCount; l++)
+    {
+        LODLevel level = _LODLevels[l];
+
+        if (splatDistance < level.distanceThreshold)
+        {
+            selectedLOD = l;
+
+            // Calculate opacity blending for smooth transitions (LODGE Equation 4)
+            // Blend between current and next LOD level within transition range
+            if (l < _LODLevelCount - 1 && _LODTransitionRange > 0.0)
+            {
+                LODLevel nextLevel = _LODLevels[l + 1];
+                float transitionStart = level.distanceThreshold - _LODTransitionRange;
+                float transitionEnd = level.distanceThreshold;
+
+                // Linear blend factor: 0 at transitionStart, 1 at transitionEnd
+                float blendFactor = saturate((splatDistance - transitionStart) / _LODTransitionRange);
+
+                // Fade out opacity as we approach next LOD level
+                // This creates smooth transitions without popping
+                opacityBlend = 1.0 - blendFactor * 0.5; // Fade to 50% at transition boundary
+            }
+
+            break;
+        }
+    }
+
+    // If distance exceeds all thresholds, use the last LOD level
+    if (splatDistance >= _LODLevels[_LODLevelCount - 1].distanceThreshold)
+    {
+        selectedLOD = _LODLevelCount - 1;
+    }
+
+    // Store LOD level and opacity blend factor for this splat
+    _SplatLODData[splatIdx] = float2(selectedLOD, opacityBlend);
 }
 

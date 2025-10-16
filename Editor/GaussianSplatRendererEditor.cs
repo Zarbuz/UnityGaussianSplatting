@@ -26,12 +26,20 @@ namespace GaussianSplatting.Editor
 		SerializedProperty m_PropCameraMovementThreshold;
 		SerializedProperty m_PropCameraRotationThreshold;
 		SerializedProperty m_PropFastSortFrequency;
-		SerializedProperty m_PropChunkSortCacheEnabled;
-		SerializedProperty m_PropChunkCacheDistanceThreshold;
 		SerializedProperty m_PropDistanceBasedSortEnabled;
 		SerializedProperty m_PropDistantChunkThreshold;
 		SerializedProperty m_PropFrustumCullingEnabled;
 		SerializedProperty m_PropFrustumCullingTolerance;
+		SerializedProperty m_PropLODEnabled;
+		SerializedProperty m_PropDynamicLODLoading;
+		SerializedProperty m_PropLODDistanceMultiplier;
+		SerializedProperty m_PropLODTransitionRange;
+		SerializedProperty m_PropUse3DSmoothingFilter;
+		SerializedProperty m_PropLODMemoryBudgetMB;
+		SerializedProperty m_PropPreloadAdjacentLODs;
+		SerializedProperty m_PropLODSwitchDebounceFrames;
+		SerializedProperty m_PropLODCullingEnabled;
+		SerializedProperty m_PropMaxRenderLODLevel;
 		SerializedProperty m_PropRenderMode;
 		SerializedProperty m_PropPointDisplaySize;
 		SerializedProperty m_PropShaderSplats;
@@ -76,12 +84,20 @@ namespace GaussianSplatting.Editor
 			m_PropCameraMovementThreshold = serializedObject.FindProperty("m_CameraMovementThreshold");
 			m_PropCameraRotationThreshold = serializedObject.FindProperty("m_CameraRotationThreshold");
 			m_PropFastSortFrequency = serializedObject.FindProperty("m_FastSortFrequency");
-			m_PropChunkSortCacheEnabled = serializedObject.FindProperty("m_ChunkSortCacheEnabled");
-			m_PropChunkCacheDistanceThreshold = serializedObject.FindProperty("m_ChunkCacheDistanceThreshold");
 			m_PropDistanceBasedSortEnabled = serializedObject.FindProperty("m_DistanceBasedSortEnabled");
 			m_PropDistantChunkThreshold = serializedObject.FindProperty("m_DistantChunkThreshold");
 			m_PropFrustumCullingEnabled = serializedObject.FindProperty("m_FrustumCullingEnabled");
 			m_PropFrustumCullingTolerance = serializedObject.FindProperty("m_FrustumCullingTolerance");
+			m_PropLODEnabled = serializedObject.FindProperty("m_LODEnabled");
+			m_PropDynamicLODLoading = serializedObject.FindProperty("m_DynamicLODLoading");
+			m_PropLODDistanceMultiplier = serializedObject.FindProperty("m_LODDistanceMultiplier");
+			m_PropLODTransitionRange = serializedObject.FindProperty("m_LODTransitionRange");
+			m_PropUse3DSmoothingFilter = serializedObject.FindProperty("m_Use3DSmoothingFilter");
+			m_PropLODMemoryBudgetMB = serializedObject.FindProperty("m_LODMemoryBudgetMB");
+			m_PropPreloadAdjacentLODs = serializedObject.FindProperty("m_PreloadAdjacentLODs");
+			m_PropLODSwitchDebounceFrames = serializedObject.FindProperty("m_LODSwitchDebounceFrames");
+			m_PropLODCullingEnabled = serializedObject.FindProperty("m_LODCullingEnabled");
+			m_PropMaxRenderLODLevel = serializedObject.FindProperty("m_MaxRenderLODLevel");
 			m_PropRenderMode = serializedObject.FindProperty("m_RenderMode");
 			m_PropPointDisplaySize = serializedObject.FindProperty("m_PointDisplaySize");
 			m_PropShaderSplats = serializedObject.FindProperty("m_ShaderSplats");
@@ -133,13 +149,7 @@ namespace GaussianSplatting.Editor
 				EditorGUILayout.PropertyField(m_PropCameraMovementThreshold);
 				EditorGUILayout.PropertyField(m_PropCameraRotationThreshold);
 				EditorGUILayout.PropertyField(m_PropFastSortFrequency);
-				EditorGUILayout.PropertyField(m_PropChunkSortCacheEnabled);
-				if (m_PropChunkSortCacheEnabled.boolValue)
-				{
-					EditorGUI.indentLevel++;
-					EditorGUILayout.PropertyField(m_PropChunkCacheDistanceThreshold);
-					EditorGUI.indentLevel--;
-				}
+
 				EditorGUILayout.PropertyField(m_PropDistanceBasedSortEnabled);
 				if (m_PropDistanceBasedSortEnabled.boolValue)
 				{
@@ -151,6 +161,82 @@ namespace GaussianSplatting.Editor
 			}
 			EditorGUILayout.PropertyField(m_PropFrustumCullingEnabled);
 			EditorGUILayout.PropertyField(m_PropFrustumCullingTolerance);
+
+			EditorGUILayout.Space();
+			GUILayout.Label("LOD (Level of Detail)", EditorStyles.boldLabel);
+			EditorGUILayout.PropertyField(m_PropLODEnabled);
+			if (m_PropLODEnabled.boolValue)
+			{
+				EditorGUI.indentLevel++;
+				EditorGUILayout.PropertyField(m_PropLODDistanceMultiplier);
+				EditorGUILayout.PropertyField(m_PropLODTransitionRange);
+				EditorGUILayout.PropertyField(m_PropUse3DSmoothingFilter);
+
+				EditorGUILayout.Space();
+				EditorGUILayout.LabelField("LOD Culling", EditorStyles.boldLabel);
+				EditorGUILayout.PropertyField(m_PropLODCullingEnabled);
+				if (m_PropLODCullingEnabled.boolValue)
+				{
+					EditorGUI.indentLevel++;
+					EditorGUILayout.PropertyField(m_PropMaxRenderLODLevel);
+					EditorGUILayout.HelpBox("LOD culling reduces rendered splats at distance (LODGE Equation 2). Higher MaxRenderLODLevel values render more distant splats.", MessageType.Info);
+					EditorGUI.indentLevel--;
+				}
+
+				EditorGUILayout.Space();
+				EditorGUILayout.LabelField("Dynamic LOD Loading", EditorStyles.boldLabel);
+				EditorGUILayout.PropertyField(m_PropDynamicLODLoading);
+
+				if (m_PropDynamicLODLoading.boolValue)
+				{
+					EditorGUI.indentLevel++;
+
+					// Check if LOD data files exist
+					bool hasLODFiles = gs.asset != null && gs.asset.hasLODDataFiles;
+					if (!hasLODFiles)
+					{
+						EditorGUILayout.HelpBox("Dynamic LOD loading requires LOD data files. Use Tools > Gaussian Splats > Generate LOD Levels to create them.", MessageType.Warning);
+					}
+					else
+					{
+						EditorGUILayout.HelpBox("Dynamic LOD loading enabled - will stream LOD data based on camera distance.", MessageType.Info);
+					}
+
+					EditorGUILayout.PropertyField(m_PropLODMemoryBudgetMB);
+					EditorGUILayout.PropertyField(m_PropPreloadAdjacentLODs);
+					EditorGUILayout.PropertyField(m_PropLODSwitchDebounceFrames);
+					EditorGUI.indentLevel--;
+				}
+
+				EditorGUILayout.Space();
+				// Display LOD level information if asset has LOD data
+				if (gs.asset != null && gs.asset.useLOD && gs.asset.lodLevelCount > 0)
+				{
+					EditorGUILayout.HelpBox($"LOD Levels: {gs.asset.lodLevelCount}\nUse the LOD Generator tool to modify LOD levels.", MessageType.Info);
+
+					// Get the LOD distance multiplier
+					float lodDistMultiplier = m_PropLODDistanceMultiplier.floatValue;
+
+					// Show basic info about each LOD level
+					for (int i = 0; i < gs.asset.lodLevelCount; i++)
+					{
+						var level = gs.asset.lodLevels[i];
+						// Apply the distance multiplier to the displayed distance
+						float effectiveDistance = level.distanceThreshold * lodDistMultiplier;
+						string distText = level.distanceThreshold == float.MaxValue ? "∞" : $"{effectiveDistance:F1}m";
+						string baseDistText = level.distanceThreshold == float.MaxValue ? "" : $" (base: {level.distanceThreshold:F1}m)";
+						string dataFiles = gs.asset.hasLODDataFiles ? "✓ Data files" : "✗ No files";
+						EditorGUILayout.LabelField($"  Level {i}: Distance < {distText}{baseDistText}, Splats: {level.splatCount:N0}, {dataFiles}");
+					}
+				}
+				else
+				{
+					EditorGUILayout.HelpBox("No LOD levels configured. Use Tools > Gaussian Splats > Generate LOD Levels to create them.", MessageType.Warning);
+				}
+
+				EditorGUI.indentLevel--;
+			}
+
 			EditorGUILayout.Space();
 			GUILayout.Label("Debugging Tweaks", EditorStyles.boldLabel);
 			EditorGUILayout.PropertyField(m_PropRenderMode);

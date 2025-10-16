@@ -127,6 +127,102 @@ namespace GaussianSplatting.Runtime
             m_SHData = dataSh;
         }
 
+        /// <summary>
+        /// Initialize default LOD levels based on LODGE paper recommendations
+        /// Creates 4 LOD levels with exponentially increasing distance thresholds
+        /// </summary>
+        public void InitializeDefaultLODLevels()
+        {
+            // Default LOD configuration: 4 levels with exponential distance distribution
+            // Based on LODGE paper: d_0=5m, d_1=10m, d_2=20m, d_3=40m, d_4=∞
+            m_LODLevels = new LODLevel[4];
+
+            // LOD 0: High detail (0-10m)
+            m_LODLevels[0] = new LODLevel
+            {
+                distanceThreshold = 10f,
+                startSplatIndex = 0,
+                splatCount = m_SplatCount,  // Full resolution
+                smoothingFactor = 0f        // No smoothing for closest LOD
+            };
+
+            // LOD 1: Medium-high detail (10-20m)
+            m_LODLevels[1] = new LODLevel
+            {
+                distanceThreshold = 20f,
+                startSplatIndex = 0,
+                splatCount = m_SplatCount,  // Will be pruned during preprocessing
+                smoothingFactor = 0.5f
+            };
+
+            // LOD 2: Medium detail (20-40m)
+            m_LODLevels[2] = new LODLevel
+            {
+                distanceThreshold = 40f,
+                startSplatIndex = 0,
+                splatCount = m_SplatCount,
+                smoothingFactor = 1.0f
+            };
+
+            // LOD 3: Low detail (40m+)
+            m_LODLevels[3] = new LODLevel
+            {
+                distanceThreshold = float.MaxValue,
+                startSplatIndex = 0,
+                splatCount = m_SplatCount,
+                smoothingFactor = 2.0f
+            };
+
+            m_UseLOD = true;
+        }
+
+        /// <summary>
+        /// Set custom LOD levels
+        /// </summary>
+        public void SetLODLevels(LODLevel[] levels, bool enable = true)
+        {
+            m_LODLevels = levels;
+            m_UseLOD = enable;
+        }
+
+        /// <summary>
+        /// Set LOD data files for each level
+        /// </summary>
+        public void SetLODDataFiles(LODDataFiles[] dataFiles)
+        {
+            m_LODDataFiles = dataFiles;
+        }
+
+        /// <summary>
+        /// Get data files for a specific LOD level (falls back to base data if not available)
+        /// </summary>
+        public void GetDataForLODLevel(int lodLevel, out TextAsset pos, out TextAsset other, out TextAsset color, out TextAsset sh, out TextAsset chunk, out int splatCount)
+        {
+            // If we have LOD-specific data files, use them
+            if (hasLODDataFiles && lodLevel >= 0 && lodLevel < m_LODDataFiles.Length)
+            {
+                var lodData = m_LODDataFiles[lodLevel];
+                if (lodData.posData != null) // Check if this LOD level has data
+                {
+                    pos = lodData.posData;
+                    other = lodData.otherData;
+                    color = lodData.colorData;
+                    sh = lodData.shData;
+                    chunk = lodData.chunkData;
+                    splatCount = lodData.splatCount;
+                    return;
+                }
+            }
+
+            // Fall back to base data
+            pos = m_PosData;
+            other = m_OtherData;
+            color = m_ColorData;
+            sh = m_SHData;
+            chunk = m_ChunkData;
+            splatCount = m_SplatCount;
+        }
+
         public static int GetOtherSizeNoSHIndex(VectorFormat scaleFormat)
         {
             return 4 + GetVectorSize(scaleFormat);
@@ -216,6 +312,14 @@ namespace GaussianSplatting.Runtime
 
         [SerializeField] CameraInfo[] m_Cameras;
 
+        // LOD system data
+        [SerializeField] LODLevel[] m_LODLevels;
+        [SerializeField] bool m_UseLOD = false;
+
+        // LOD data files (one set per LOD level)
+        // Each LOD level can have its own pruned/filtered splat data
+        [SerializeField] LODDataFiles[] m_LODDataFiles;
+
         public VectorFormat posFormat => m_PosFormat;
         public VectorFormat scaleFormat => m_ScaleFormat;
         public SHFormat shFormat => m_SHFormat;
@@ -228,12 +332,41 @@ namespace GaussianSplatting.Runtime
         public TextAsset chunkData => m_ChunkData;
         public CameraInfo[] cameras => m_Cameras;
 
+        // LOD accessors
+        public LODLevel[] lodLevels => m_LODLevels;
+        public bool useLOD => m_UseLOD;
+        public int lodLevelCount => m_LODLevels?.Length ?? 0;
+        public LODDataFiles[] lodDataFiles => m_LODDataFiles;
+        public bool hasLODDataFiles => m_LODDataFiles != null && m_LODDataFiles.Length > 0;
+
         public struct ChunkInfo
         {
             public uint colR, colG, colB, colA;
             public float2 posX, posY, posZ;
             public uint sclX, sclY, sclZ;
             public uint shR, shG, shB;
+        }
+
+        // LOD (Level of Detail) system structures based on LODGE paper
+        [Serializable]
+        public struct LODLevel
+        {
+            public float distanceThreshold;     // Distance threshold for this LOD level (d_l in paper)
+            public int startSplatIndex;         // Start index of splats for this LOD level
+            public int splatCount;              // Number of splats in this LOD level
+            public float smoothingFactor;       // 3D smoothing filter factor (s_d/f in paper)
+        }
+
+        // Data files for a specific LOD level
+        [Serializable]
+        public struct LODDataFiles
+        {
+            public TextAsset posData;
+            public TextAsset otherData;
+            public TextAsset colorData;
+            public TextAsset shData;
+            public TextAsset chunkData;
+            public int splatCount;
         }
 
         [Serializable]
