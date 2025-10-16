@@ -400,22 +400,24 @@ void CSStreamCompactScan(uint3 id : SV_DispatchThreadID)
 void CSStreamCompactWrite(uint3 id : SV_DispatchThreadID)
 {
     uint idx = id.x;
+    if (idx >= _SplatCount)
+        return;
 
     // Get total visible count
     uint visibleCount = _VisibleCount[0];
 
-    if (idx >= visibleCount)
-        return;
-
-    // Copy visible index to sort keys buffer
-    // This will be used for sorting visible splats
-    uint splatIdx = _VisibleIndices[idx];
-    _SplatSortKeys[idx] = splatIdx;
-
-    // Fill remaining entries with sentinel values to sort to the end
-    if (idx >= visibleCount && idx < _SplatCount)
+    if (idx < visibleCount)
     {
-        _SplatSortKeys[idx] = 0xFFFFFFF0;
+        // Copy visible index to sort keys buffer
+        // This will be used for sorting visible splats
+        uint splatIdx = _VisibleIndices[idx];
+        _SplatSortKeys[idx] = splatIdx;
+    }
+    else
+    {
+        // Fill remaining entries with sentinel values to sort to the end
+        // Use deterministic pattern to ensure stable sorting behavior
+        _SplatSortKeys[idx] = 0xFFFFFFF0 + (idx % 16);
     }
 }
 

@@ -815,7 +815,7 @@ namespace GaussianSplatting.Runtime
 			GUILayout.EndScrollView();
 
 			// Close button
-			if (GUILayout.Button("Close (Ctrl+G)"))
+			if (GUILayout.Button("Close (D)"))
 			{
 				m_ShowRuntimeGUI = false;
 			}
@@ -1395,7 +1395,7 @@ namespace GaussianSplatting.Runtime
 				cmd.DispatchCompute(m_CSStreamCompact, copyKernelIndex, 1, 1, 1);
 
 				// Debug: Display visible splats percentage occasionally
-				if (Time.frameCount % 60 == 0) // Every second
+				if (Time.frameCount % 60 == 0) // Every second at 60 FPS
 				{
 					cmd.RequestAsyncReadback(m_GpuIndirectArgs, (readback) =>
 					{
@@ -1403,6 +1403,14 @@ namespace GaussianSplatting.Runtime
 						{
 							var data = readback.GetData<uint>();
 							m_LastVisibleSplatCount = data[1]; // instanceCount
+
+							// Log culling statistics for debugging
+							float visiblePercentage = (m_LastVisibleSplatCount * 100f) / m_SplatCount;
+							uint culledCount = (uint)m_SplatCount - m_LastVisibleSplatCount;
+							float culledPercentage = (culledCount * 100f) / m_SplatCount;
+							Debug.Log($"[{name}] Frustum Culling Stats - Frame {Time.frameCount}: " +
+							          $"Visible={m_LastVisibleSplatCount:N0}/{m_SplatCount:N0} ({visiblePercentage:F1}%), " +
+							          $"Culled={culledCount:N0} ({culledPercentage:F1}%)");
 						}
 					});
 				}
@@ -1423,8 +1431,8 @@ namespace GaussianSplatting.Runtime
 
 		public void Update()
 		{
-			// Toggle runtime GUI with Ctrl+G
-			if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetKeyDown(KeyCode.G))
+			// Toggle runtime GUI with D
+			if (Input.GetKeyDown(KeyCode.D))
 			{
 				m_ShowRuntimeGUI = !m_ShowRuntimeGUI;
 			}
