@@ -62,27 +62,19 @@ void CSCalcDistances(uint3 id : SV_DispatchThreadID)
     uint origIdx = _SplatSortKeys[idx];
 
     // Check for sentinel values (unused entries from frustum culling)
-    if (origIdx >= 0xFFFFFFF0)
+    if (origIdx == 0xFFFFFFFF)
     {
         // Set maximum distance so these entries sort to the end
-        // Use the same sentinel value to maintain sorting stability
-        _SplatSortDistances[idx] = origIdx;
+        _SplatSortDistances[idx] = 0xFFFFFFFF;
     }
     else
     {
         float3 pos = LoadSplatPos(origIdx);
         pos = mul(_MatrixMV, float4(pos.xyz, 1)).xyz;
 
-        // Create a deterministic sort key by encoding original index in lower bits
-        // This ensures stable sorting for splats with similar depths
-        uint distanceKey = FloatToSortableUint(pos.z);
-
-        // Use lower 16 bits for original index to break ties deterministically
-        // Shift distance to upper bits and add index in lower bits
-        uint indexBits = origIdx & 0xFFFF; // Take lower 16 bits of original index
-        distanceKey = (distanceKey & 0xFFFF0000) | indexBits;
-
-        _SplatSortDistances[idx] = distanceKey;
+        // Use FULL precision distance for stable sorting
+        // No mixing with index - pure distance-based sorting
+        _SplatSortDistances[idx] = FloatToSortableUint(pos.z);
     }
 }
 
@@ -416,8 +408,8 @@ void CSStreamCompactWrite(uint3 id : SV_DispatchThreadID)
     else
     {
         // Fill remaining entries with sentinel values to sort to the end
-        // Use deterministic pattern to ensure stable sorting behavior
-        _SplatSortKeys[idx] = 0xFFFFFFF0 + (idx % 16);
+        // Use a simple fixed sentinel - all hidden splats are equal priority
+        _SplatSortKeys[idx] = 0xFFFFFFFF;
     }
 }
 
